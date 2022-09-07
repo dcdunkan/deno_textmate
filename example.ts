@@ -38,29 +38,28 @@ const registry = new Registry({
 });
 
 // Load the JavaScript grammar and any other grammars included by it async.
-registry.loadGrammar("source.js").then((grammar) => {
-  if (!grammar) return;
-  const text = [
-    `function sayHello(name) {`,
-    `\treturn "Hello, " + name;`,
-    `}`,
-  ];
-  let ruleStack = INITIAL;
-  for (let i = 0; i < text.length; i++) {
-    const line = text[i];
-    const lineTokens = grammar.tokenizeLine(line, ruleStack);
-    console.log(`\nTokenizing line: ${line}`);
-    for (let j = 0; j < lineTokens.tokens.length; j++) {
-      const token = lineTokens.tokens[j];
-      console.log(
-        ` - token from ${token.startIndex} to ${token.endIndex} ` +
-          `(${line.substring(token.startIndex, token.endIndex)}) ` +
-          `with scopes ${token.scopes.join(", ")}`,
-      );
-    }
-    ruleStack = lineTokens.ruleStack;
+const grammar = await registry.loadGrammar("source.js");
+
+const text = [
+  `function sayHello(name) {`,
+  `\treturn "Hello, " + name;`,
+  `}`,
+];
+let ruleStack = INITIAL;
+for (let i = 0; i < text.length; i++) {
+  const line = text[i];
+  const lineTokens = grammar!.tokenizeLine(line, ruleStack);
+  console.log(`\nTokenizing line: ${line}`);
+  for (let j = 0; j < lineTokens.tokens.length; j++) {
+    const token = lineTokens.tokens[j];
+    console.log(
+      ` - token from ${token.startIndex} to ${token.endIndex} ` +
+        `(${line.substring(token.startIndex, token.endIndex)}) ` +
+        `with scopes ${token.scopes.join(", ")}`,
+    );
   }
-});
+  ruleStack = lineTokens.ruleStack;
+}
 
 /* OUTPUT:
 
