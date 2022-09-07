@@ -1,0 +1,17 @@
+{
+  "fmt": {
+    "files": {
+      "exclude": ["test-cases"]
+    }
+  },
+  "lint": {
+    "files": {
+      "exclude": ["test-cases"]
+    }
+  },
+  "test": {
+    "files": {
+      "exclude": ["test-cases"]
+    }
+  }
+}
