@@ -1,6 +1,6 @@
 <div align="center">
 
-# TextMate 🦕
+# TextMate
 
 </div>
 
@@ -131,8 +131,7 @@ Tokenizing line: }
 Run the example using Deno CLI:
 
 ```shell
-deno run --allow-env=VSCODE_TEXTMATE_DEBUG --allow-read --allow-net
-https://ghc.deno.dev/dcdunkan/deno_textmate/example.ts
+deno run --allow-env=VSCODE_TEXTMATE_DEBUG --allow-read --allow-net https://ghc.deno.dev/dcdunkan/deno_textmate/example.ts
 ```
 
 ---
