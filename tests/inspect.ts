@@ -2,16 +2,15 @@
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
 
-import * as debug from "../debug.ts";
-import { getOniguruma } from "./onig_libs.ts";
 import { IGrammar, parseRawGrammar, Registry } from "../mod.ts";
 import {
   Grammar as GrammarImpl,
-  StackElement as StackElementImpl,
-} from "../grammar.ts";
+  StateStack as StackElementImpl,
+} from "../grammar/mod.ts";
+import * as debug from "../debug.ts";
+import { getOniguruma } from "./onig_libs.ts";
 
-// deno-lint-ignore no-unused-vars
-class ExtendedStackElement extends StackElementImpl {
+class _ExtendedStackElement extends StackElementImpl {
   _instanceId?: number;
 }
 
@@ -57,7 +56,7 @@ Promise.all(grammarPromises).then((_grammars) => {
 
     console.log("");
 
-    let stackElement: ExtendedStackElement | null = <ExtendedStackElement> r
+    let stackElement: _ExtendedStackElement | null = <_ExtendedStackElement> r
       .ruleStack;
     let cnt = 0;
     while (stackElement) {
@@ -66,23 +65,21 @@ Promise.all(grammarPromises).then((_grammars) => {
     }
 
     console.log("@@LINE END RULE STACK CONTAINS " + cnt + " RULES:");
-    stackElement = <ExtendedStackElement> r.ruleStack;
+    stackElement = <_ExtendedStackElement> r.ruleStack;
     const list: string[] = [];
     while (stackElement) {
       if (!stackElement._instanceId) {
         stackElement._instanceId = ++lastElementId;
       }
-      const ruleDesc = (<GrammarImpl> grammar).getRule(stackElement.ruleId);
+      const ruleDesc = stackElement.getRule(grammar as GrammarImpl);
       if (!ruleDesc) {
-        list.push(
-          "  * no rule description found for rule id: " + stackElement.ruleId,
-        );
+        list.push("  * no rule description found");
       } else {
         list.push(
           "  * " + ruleDesc.debugName + "  -- [" + ruleDesc.id + "," +
             stackElement._instanceId + '] "' +
-            stackElement.nameScopesList.generateScopes() + '", "' +
-            stackElement.contentNameScopesList.generateScopes() + '"',
+            stackElement.nameScopesList.getScopeNames() + '", "' +
+            stackElement.contentNameScopesList.getScopeNames() + '"',
         );
       }
       stackElement = stackElement.parent;

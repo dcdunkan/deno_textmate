@@ -1,18 +1,21 @@
 /*---------------------------------------------------------
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
-import { assertEquals, dirname, fromFileUrl, join } from "./deps.ts";
+
+import * as path from "https://deno.land/std@0.154.0/path/mod.ts";
+import * as assert from "https://deno.land/std@0.154.0/node/assert/strict.ts";
 import {
   IGrammar,
   parseRawGrammar,
   Registry,
   RegistryOptions,
-  StackElement,
+  StateStack,
 } from "../mod.ts";
-import { IOnigLib, IRawGrammar } from "../types.ts";
+import { IOnigLib } from "../onig_lib.ts";
 import { getOniguruma } from "./onig_libs.ts";
+import { IRawGrammar } from "../raw_grammar.ts";
 
-const REPO_ROOT = join(fromFileUrl(import.meta.url), "../../");
+const REPO_ROOT = path.join(path.fromFileUrl(import.meta.url), "../../");
 
 function assertTokenizationSuite(testLocation: string): void {
   interface IRawTest {
@@ -32,11 +35,13 @@ function assertTokenizationSuite(testLocation: string): void {
     scopes: string[];
   }
 
-  const tests: IRawTest[] = JSON.parse(Deno.readTextFileSync(testLocation));
+  const tests: IRawTest[] = JSON.parse(
+    Deno.readTextFileSync(testLocation),
+  );
 
-  tests.forEach((test) => {
-    Deno.test(test.desc, async () => {
-      await performTest(test, getOniguruma());
+  tests.map((tst) => {
+    Deno.test(tst.desc, async () => {
+      await performTest(tst, getOniguruma());
     });
   });
 
@@ -48,8 +53,8 @@ function assertTokenizationSuite(testLocation: string): void {
     const grammarByScope: { [scope: string]: IRawGrammar } = {};
     for (const grammarPath of test.grammars) {
       const content = Deno.readTextFileSync(
-        join(dirname(testLocation), grammarPath),
-      );
+        path.join(path.dirname(testLocation), grammarPath),
+      ).toString();
       const rawGrammar = parseRawGrammar(content, grammarPath);
       grammarByScope[rawGrammar.scopeName] = rawGrammar;
       if (!grammarScopeName && grammarPath === test.grammarPath) {
@@ -77,7 +82,7 @@ function assertTokenizationSuite(testLocation: string): void {
     if (!grammar) {
       throw new Error("I HAVE NO GRAMMAR FOR TEST");
     }
-    let prevState: StackElement | null = null;
+    let prevState: StateStack | null = null;
     for (let i = 0; i < test.lines.length; i++) {
       prevState = assertLineTokenization(grammar, test.lines[i], prevState);
     }
@@ -86,9 +91,10 @@ function assertTokenizationSuite(testLocation: string): void {
   function assertLineTokenization(
     grammar: IGrammar,
     testCase: IRawTestLine,
-    prevState: StackElement | null,
-  ): StackElement {
+    prevState: StateStack | null,
+  ): StateStack {
     const actual = grammar.tokenizeLine(testCase.line, prevState);
+
     const actualTokens: IRawToken[] = actual.tokens.map((token) => {
       return {
         value: testCase.line.substring(token.startIndex, token.endIndex),
@@ -104,7 +110,7 @@ function assertTokenizationSuite(testLocation: string): void {
       });
     }
 
-    assertEquals(
+    assert.deepStrictEqual(
       actualTokens,
       testCase.tokens,
       "Tokenizing line " + testCase.line,
@@ -114,6 +120,10 @@ function assertTokenizationSuite(testLocation: string): void {
   }
 }
 
-assertTokenizationSuite(join(REPO_ROOT, "test-cases/first-mate/tests.json"));
-assertTokenizationSuite(join(REPO_ROOT, "test-cases/suite1/tests.json"));
-assertTokenizationSuite(join(REPO_ROOT, "test-cases/suite1/whileTests.json"));
+assertTokenizationSuite(
+  path.join(REPO_ROOT, "test-cases/first-mate/tests.json"),
+);
+assertTokenizationSuite(path.join(REPO_ROOT, "test-cases/suite1/tests.json"));
+assertTokenizationSuite(
+  path.join(REPO_ROOT, "test-cases/suite1/whileTests.json"),
+);

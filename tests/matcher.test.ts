@@ -1,9 +1,8 @@
 /*---------------------------------------------------------
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
-
+import * as assert from "https://deno.land/std@0.154.0/node/assert/strict.ts";
 import { createMatchers } from "../matcher.ts";
-import { assertEquals } from "./deps.ts";
 
 const tests = [
   { "expression": "foo", "input": ["foo"], "result": true },
@@ -77,10 +76,10 @@ const nameMatcher = (identifers: string[], stackElements: string[]) => {
   });
 };
 
-tests.forEach((test, index) => {
+tests.map((tst, index) => {
   Deno.test("Matcher Test #" + index, () => {
-    const matchers = createMatchers(test.expression, nameMatcher);
-    const result = matchers.some((m) => m.matcher(test.input));
-    assertEquals(result, test.result);
+    const matchers = createMatchers(tst.expression, nameMatcher);
+    const result = matchers.some((m) => m.matcher(tst.input));
+    assert.strictEqual(result, tst.result);
   });
 });

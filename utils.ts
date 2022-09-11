@@ -1,9 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-/*---------------------------------------------------------
- * Copyright (C) Microsoft Corporation. All rights reserved.
- *--------------------------------------------------------*/
-
-import { IOnigCaptureIndex } from "./types.ts";
+import { IOnigCaptureIndex } from "./onig_lib.ts";
 
 export function clone<T>(something: T): T {
   return doClone(something);
@@ -96,3 +92,98 @@ export class RegexSource {
     );
   }
 }
+
+/**
+ * A union of given const enum values.
+ */
+export type OrMask<T extends number> = number;
+
+export function strcmp(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+export function strArrCmp(a: string[] | null, b: string[] | null): number {
+  if (a === null && b === null) {
+    return 0;
+  }
+  if (!a) {
+    return -1;
+  }
+  if (!b) {
+    return 1;
+  }
+  const len1 = a.length;
+  const len2 = b.length;
+  if (len1 === len2) {
+    for (let i = 0; i < len1; i++) {
+      const res = strcmp(a[i], b[i]);
+      if (res !== 0) {
+        return res;
+      }
+    }
+    return 0;
+  }
+  return len1 - len2;
+}
+
+export function isValidHexColor(hex: string): boolean {
+  if (/^#[0-9a-f]{6}$/i.test(hex)) {
+    // #rrggbb
+    return true;
+  }
+
+  if (/^#[0-9a-f]{8}$/i.test(hex)) {
+    // #rrggbbaa
+    return true;
+  }
+
+  if (/^#[0-9a-f]{3}$/i.test(hex)) {
+    // #rgb
+    return true;
+  }
+
+  if (/^#[0-9a-f]{4}$/i.test(hex)) {
+    // #rgba
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Escapes regular expression characters in a given string
+ */
+export function escapeRegExpCharacters(value: string): string {
+  return value.replace(/[\-\\\{\}\*\+\?\|\^\$\.\,\[\]\(\)\#\s]/g, "\\$&");
+}
+
+export class CachedFn<TKey, TValue> {
+  private readonly cache = new Map<TKey, TValue>();
+  constructor(private readonly fn: (key: TKey) => TValue) {
+  }
+
+  public get(key: TKey): TValue {
+    if (this.cache.has(key)) {
+      return this.cache.get(key)!;
+    }
+    const value = this.fn(key);
+    this.cache.set(key, value);
+    return value;
+  }
+}
+
+declare let performance: { now: () => number } | undefined;
+export const performanceNow = typeof performance === "undefined"
+  // performance.now() is not available in this environment, so use Date.now()
+  ? function () {
+    return Date.now();
+  }
+  : function () {
+    return performance!.now();
+  };

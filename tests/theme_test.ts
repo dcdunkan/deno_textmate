@@ -1,7 +1,8 @@
 /*---------------------------------------------------------
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
-import { extname, join } from "./deps.ts";
+import * as path from "https://deno.land/std@0.154.0/path/mod.ts";
+
 import { IEmbeddedLanguagesMap } from "../mod.ts";
 import { IThemedToken, tokenizeWithTheme } from "./themed_tokenizer.ts";
 import { ThemeData } from "./themes.test.ts";
@@ -33,10 +34,10 @@ export class ThemeTest {
     themeDatas: ThemeData[],
     resolver: Resolver,
   ) {
-    const TEST_FILE_PATH = join(THEMES_TEST_PATH, "tests", testFile);
+    const TEST_FILE_PATH = path.join(THEMES_TEST_PATH, "tests", testFile);
     const testFileContents = ThemeTest._readFile(TEST_FILE_PATH);
 
-    this.EXPECTED_FILE_PATH = join(
+    this.EXPECTED_FILE_PATH = path.join(
       THEMES_TEST_PATH,
       "tests",
       testFile + ".result",
@@ -46,7 +47,7 @@ export class ThemeTest {
     );
 
     // Determine the language
-    const language = resolver.findLanguageByExtension(extname(testFile)) ||
+    const language = resolver.findLanguageByExtension(path.extname(testFile)) ||
       resolver.findLanguageByFilename(testFile);
     if (!language) {
       throw new Error("Could not determine language for " + testFile);
