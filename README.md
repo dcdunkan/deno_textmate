@@ -17,13 +17,13 @@ not supported.
 
 You can import this module from
 
-- https://ghc.deno.dev/dcdunkan/deno_textmate/mod.ts
+- https://ghc.deno.dev/dcdunkan/deno_textmate@VERSION/mod.ts
 - or from GitHub raw links.
 
 Tests:
 
 ```shell
-deno test -A --ignore=test-cases
+deno test -A
 ```
 
 For any other information: https://github.com/Microsoft/vscode-textmate
@@ -135,14 +135,4 @@ deno run --allow-env=VSCODE_TEXTMATE_DEBUG --allow-read --allow-net https://ghc.
 
 ---
 
-Credits and copyright of the code goes to Microsoft. I only ported this to Deno.
-Changed a few lines and fixed `deno lint` errors. Thats it, didn't even fix or
-improve anything.
-
-Why?
-
-I ported this originally for porting [Shiki](https://github.com/shikijs/shiki)
-to Deno. It cannot be imported from esm.sh or skypack due to some dependency
-issues (vscode-textmate!). I don't know if that is an actual issue with esm.sh
-or whatever. Anyways it is always nice to have a Deno version. I don't want to
-wait for it to be fixed. SO.
+Credits and copyright of the code goes to Microsoft.
