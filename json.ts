@@ -17,7 +17,7 @@ export interface ILocation {
   readonly char: number;
 }
 
-export function parseJSON(
+export function parse(
   source: string,
   filename: string | null,
   withMetadata: boolean,
