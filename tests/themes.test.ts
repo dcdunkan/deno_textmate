@@ -2,23 +2,25 @@
 /*---------------------------------------------------------
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
-
-import * as path from "https://deno.land/std@0.154.0/path/mod.ts";
-import * as assert from "https://deno.land/std@0.154.0/node/assert/strict.ts";
-import { Registry } from "../mod.ts";
+import { assertEquals, assertStrictEquals, fromFileUrl, join } from "./deps.ts";
+import { IRawTheme, Registry } from "../mod.ts";
+import {
+  ScopeListElement,
+  ScopeMetadata,
+  StackElementMetadata,
+} from "../grammar.ts";
 import {
   ColorMap,
   FontStyle,
-  fontStyleToString,
-  IRawTheme,
   ParsedThemeRule,
   parseTheme,
-  ScopeStack,
-  StyleAttributes,
+  strArrCmp,
+  strcmp,
   Theme,
   ThemeTrieElement,
   ThemeTrieElementRule,
 } from "../theme.ts";
+import * as plist from "../plist.ts";
 import { ThemeTest } from "./theme_test.ts";
 import { getOniguruma } from "./onig_libs.ts";
 import {
@@ -26,14 +28,11 @@ import {
   ILanguageRegistration,
   Resolver,
 } from "./resolver.ts";
-import { strArrCmp, strcmp } from "../utils.ts";
-import { parsePLIST } from "../plist.ts";
 
-const THEMES_TEST_PATH = path.join(
-  path.fromFileUrl(import.meta.url),
+const THEMES_TEST_PATH = join(
+  fromFileUrl(import.meta.url),
   "../../test-cases/themes",
 );
-
 export interface ThemeData {
   themeName: string;
   theme: IRawTheme;
@@ -52,13 +51,13 @@ class ThemeInfo {
   }
 
   private static _loadThemeFile(filename: string): IRawTheme {
-    const fullPath = path.join(THEMES_TEST_PATH, filename);
+    const fullPath = join(THEMES_TEST_PATH, filename);
     const fileContents = Deno.readTextFileSync(fullPath);
 
     if (/\.json$/.test(filename)) {
       return JSON.parse(fileContents);
     }
-    return parsePLIST(fileContents);
+    return plist.parse(fileContents);
   }
 
   public create(resolver: Resolver): ThemeData {
@@ -101,14 +100,14 @@ class ThemeInfo {
 
   // Load all language/grammar metadata
   const _grammars: IGrammarRegistration[] = JSON.parse(
-    Deno.readTextFileSync(path.join(THEMES_TEST_PATH, "grammars.json")),
+    Deno.readTextFileSync(join(THEMES_TEST_PATH, "grammars.json")),
   );
   for (const grammar of _grammars) {
-    grammar.path = path.join(THEMES_TEST_PATH, grammar.path);
+    grammar.path = join(THEMES_TEST_PATH, grammar.path);
   }
 
   const _languages: ILanguageRegistration[] = JSON.parse(
-    Deno.readTextFileSync(path.join(THEMES_TEST_PATH, "languages.json")),
+    Deno.readTextFileSync(join(THEMES_TEST_PATH, "languages.json")),
   );
 
   const _resolver = new Resolver(_grammars, _languages, getOniguruma());
@@ -116,10 +115,9 @@ class ThemeInfo {
 
   // Discover all tests
   let testFiles: string[] = [];
-  for (const file of Deno.readDirSync(path.join(THEMES_TEST_PATH, "tests"))) {
+  for (const file of Deno.readDirSync(join(THEMES_TEST_PATH, "tests"))) {
     testFiles.push(file.name);
   }
-
   testFiles = testFiles.filter((testFile) => !/\.result$/.test(testFile));
   testFiles = testFiles.filter((testFile) => !/\.result.patch$/.test(testFile));
   testFiles = testFiles.filter((testFile) => !/\.actual$/.test(testFile));
@@ -135,7 +133,7 @@ class ThemeInfo {
     Deno.test(tst.testName, async () => {
       try {
         await tst.evaluate();
-        assert.deepStrictEqual(tst.actual, tst.expected);
+        assertStrictEquals(tst.actual, tst.expected);
       } catch (err) {
         tst.writeExpected();
         throw err;
@@ -144,70 +142,104 @@ class ThemeInfo {
   }
 })();
 
-Deno.test("Theme matching gives higher priority to deeper matches", () => {
-  const theme = Theme.createFromRawTheme({
-    settings: [
-      { settings: { foreground: "#100000", background: "#200000" } },
-      {
-        scope: "punctuation.definition.string.begin.html",
-        settings: { foreground: "#300000" },
-      },
-      {
-        scope: "meta.tag punctuation.definition.string",
-        settings: { foreground: "#400000" },
-      },
-    ],
-  });
-  const actual = theme.match(
-    ScopeStack.from("punctuation.definition.string.begin.html"),
-  );
-  assert.deepStrictEqual(theme.getColorMap()[actual!.foregroundId], "#300000");
-});
+Deno.test(
+  "Theme matching gives higher priority to deeper matches",
+  () => {
+    const theme = Theme.createFromRawTheme({
+      settings: [
+        { settings: { foreground: "#100000", background: "#200000" } },
+        {
+          scope: "punctuation.definition.string.begin.html",
+          settings: { foreground: "#300000" },
+        },
+        {
+          scope: "meta.tag punctuation.definition.string",
+          settings: { foreground: "#400000" },
+        },
+        // { scope: 'a', settings: { foreground: '#500000' } },
+      ],
+    });
 
-Deno.test("Theme matching gives higher priority to parent matches 1", () => {
-  const theme = Theme.createFromRawTheme({
-    settings: [
-      { settings: { foreground: "#100000", background: "#200000" } },
-      { scope: "c a", settings: { foreground: "#300000" } },
-      { scope: "d a.b", settings: { foreground: "#400000" } },
-      { scope: "a", settings: { foreground: "#500000" } },
-    ],
-  });
+    const colorMap = new ColorMap();
+    const _NOT_SET = 0;
+    const _A = colorMap.getId("#100000");
+    const _B = colorMap.getId("#200000");
+    const _C = colorMap.getId("#400000");
+    const _D = colorMap.getId("#300000");
 
-  const map = theme.getColorMap();
+    const actual = theme.match("punctuation.definition.string.begin.html");
+    // console.log(actual); process.exit(0);
 
-  assert.deepStrictEqual(
-    map[theme.match(ScopeStack.from("d", "a.b"))!.foregroundId],
-    "#400000",
-  );
-});
+    assertEquals(actual, [
+      new ThemeTrieElementRule(5, null, FontStyle.NotSet, _D, _NOT_SET),
+      new ThemeTrieElementRule(3, ["meta.tag"], FontStyle.NotSet, _C, _NOT_SET),
+    ]);
+  },
+);
 
-Deno.test("Theme matching gives higher priority to parent matches 2", () => {
-  const theme = Theme.createFromRawTheme({
-    settings: [
-      { settings: { foreground: "#100000", background: "#200000" } },
-      { scope: "meta.tag entity", settings: { foreground: "#300000" } },
-      {
-        scope: "meta.selector.css entity.name.tag",
-        settings: { foreground: "#400000" },
-      },
-      { scope: "entity", settings: { foreground: "#500000" } },
-    ],
-  });
+Deno.test(
+  "Theme matching gives higher priority to parent matches 1",
+  () => {
+    const theme = Theme.createFromRawTheme({
+      settings: [
+        { settings: { foreground: "#100000", background: "#200000" } },
+        { scope: "c a", settings: { foreground: "#300000" } },
+        { scope: "d a.b", settings: { foreground: "#400000" } },
+        { scope: "a", settings: { foreground: "#500000" } },
+      ],
+    });
 
-  const result = theme.match(
-    ScopeStack.from(
-      "text.html.cshtml",
-      "meta.tag.structure.any.html",
-      "entity.name.tag.structure.any.html",
-    ),
-  );
+    const colorMap = new ColorMap();
+    const _NOT_SET = 0;
+    const _A = colorMap.getId("#100000");
+    const _B = colorMap.getId("#200000");
+    const _C = colorMap.getId("#500000");
+    const _D = colorMap.getId("#300000");
+    const _E = colorMap.getId("#400000");
 
-  const colorMap = theme.getColorMap();
-  assert.strictEqual(colorMap[result!.foregroundId], "#300000");
-});
+    const actual = theme.match("a.b");
 
-Deno.test("Theme matching can match", async (t) => {
+    assertEquals(actual, [
+      new ThemeTrieElementRule(2, ["d"], FontStyle.NotSet, _E, _NOT_SET),
+      new ThemeTrieElementRule(1, ["c"], FontStyle.NotSet, _D, _NOT_SET),
+      new ThemeTrieElementRule(1, null, FontStyle.NotSet, _C, _NOT_SET),
+    ]);
+  },
+);
+
+Deno.test(
+  "Theme matching gives higher priority to parent matches 2",
+  () => {
+    const theme = Theme.createFromRawTheme({
+      settings: [
+        { settings: { foreground: "#100000", background: "#200000" } },
+        { scope: "meta.tag entity", settings: { foreground: "#300000" } },
+        {
+          scope: "meta.selector.css entity.name.tag",
+          settings: { foreground: "#400000" },
+        },
+        { scope: "entity", settings: { foreground: "#500000" } },
+      ],
+    });
+
+    const root = new ScopeListElement(null, "text.html.cshtml", 0);
+    const parent = new ScopeListElement(root, "meta.tag.structure.any.html", 0);
+    const r = ScopeListElement.mergeMetadata(
+      0,
+      parent,
+      new ScopeMetadata(
+        "entity.name.tag.structure.any.html",
+        0,
+        0,
+        theme.match("entity.name.tag.structure.any.html"),
+      ),
+    );
+    const colorMap = theme.getColorMap();
+    assertEquals(colorMap[StackElementMetadata.getForeground(r)], "#300000");
+  },
+);
+
+Deno.test("Theme matching can match", () => {
   const theme = Theme.createFromRawTheme({
     settings: [
       { settings: { foreground: "#F8F8F2", background: "#272822" } },
@@ -235,232 +267,139 @@ Deno.test("Theme matching can match", async (t) => {
     ],
   });
 
-  const map = theme.getColorMap();
+  const colorMap = new ColorMap();
+  const _NOT_SET = 0;
+  const _A = colorMap.getId("#F8F8F2");
+  const _B = colorMap.getId("#272822");
+  const _C = colorMap.getId("#200000");
+  const _D = colorMap.getId("#300000");
+  const _E = colorMap.getId("#400000");
+  const _F = colorMap.getId("#500000");
+  const _G = colorMap.getId("#100000");
+  const _H = colorMap.getId("#600000");
 
-  function match(...path: string[]) {
-    const result = theme.match(ScopeStack.from(...path));
-    if (!result) {
-      return null;
-    }
-    const obj: any = {
-      fontStyle: fontStyleToString(result.fontStyle),
-    };
-    if (result.foregroundId !== 0) {
-      obj.foreground = map[result.foregroundId];
-    }
-    if (result.backgroundId !== 0) {
-      obj.background = map[result.backgroundId];
-    }
-    return obj;
+  function assertMatch(
+    scopeName: string,
+    expected: ThemeTrieElementRule[],
+  ): void {
+    const actual = theme.match(scopeName);
+    assertEquals(actual, expected, "when matching <<" + scopeName + ">>");
   }
 
-  await t.step("simpleMatch1", () =>
-    assert.deepStrictEqual(match("source"), {
-      background: "#100000",
-      fontStyle: "not set",
-    }));
-  await t.step(
-    "simpleMatch2",
-    () =>
-      assert.deepStrictEqual(match("source.ts"), {
-        background: "#100000",
-        fontStyle: "not set",
-      }),
-  );
-  await t.step(
-    "simpleMatch3",
-    () =>
-      assert.deepStrictEqual(match("source.tss"), {
-        background: "#100000",
-        fontStyle: "not set",
-      }),
-  );
-  await t.step(
-    "simpleMatch4",
-    () =>
-      assert.deepStrictEqual(match("something"), {
-        background: "#100000",
-        fontStyle: "not set",
-      }),
-  );
-  await t.step(
-    "simpleMatch5",
-    () =>
-      assert.deepStrictEqual(match("something.ts"), {
-        background: "#100000",
-        fontStyle: "not set",
-      }),
-  );
-  await t.step(
-    "simpleMatch6",
-    () =>
-      assert.deepStrictEqual(match("something.tss"), {
-        background: "#100000",
-        fontStyle: "not set",
-      }),
-  );
-  await t.step("simpleMatch7", () =>
-    assert.deepStrictEqual(match("baz"), {
-      background: "#200000",
-      fontStyle: "not set",
-    }));
-  await t.step("simpleMatch8", () =>
-    assert.deepStrictEqual(match("baz.ts"), {
-      background: "#200000",
-      fontStyle: "not set",
-    }));
-  await t.step("simpleMatch9", () =>
-    assert.deepStrictEqual(match("baz.tss"), {
-      background: "#200000",
-      fontStyle: "not set",
-    }));
-  await t.step(
-    "simpleMatch10",
-    () =>
-      assert.deepStrictEqual(match("constant"), {
-        foreground: "#300000",
-        fontStyle: "italic",
-      }),
-  );
-  await t.step(
-    "simpleMatch11",
-    () =>
-      assert.deepStrictEqual(match("constant.string"), {
-        foreground: "#300000",
-        fontStyle: "italic",
-      }),
-  );
-  await t.step(
-    "simpleMatch12",
-    () =>
-      assert.deepStrictEqual(match("constant.hex"), {
-        foreground: "#300000",
-        fontStyle: "italic",
-      }),
-  );
-  await t.step(
-    "simpleMatch13",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric"), {
-        foreground: "#400000",
-        fontStyle: "italic",
-      }),
-  );
-  await t.step(
-    "simpleMatch14",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.baz"), {
-        foreground: "#400000",
-        fontStyle: "italic",
-      }),
-  );
-  await t.step(
-    "simpleMatch15",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.hex"), {
-        foreground: "#400000",
-        fontStyle: "bold",
-      }),
-  );
-  await t.step(
-    "simpleMatch16",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.hex.baz"), {
-        foreground: "#400000",
-        fontStyle: "bold",
-      }),
-  );
-  await t.step(
-    "simpleMatch17",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.oct"), {
-        foreground: "#400000",
-        fontStyle: "italic bold underline",
-      }),
-  );
-  await t.step(
-    "simpleMatch18",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.oct.baz"), {
-        foreground: "#400000",
-        fontStyle: "italic bold underline",
-      }),
-  );
-  await t.step(
-    "simpleMatch19",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.dec"), {
-        foreground: "#500000",
-        fontStyle: "none",
-      }),
-  );
-  await t.step(
-    "simpleMatch20",
-    () =>
-      assert.deepStrictEqual(match("constant.numeric.dec.baz"), {
-        foreground: "#500000",
-        fontStyle: "none",
-      }),
-  );
-  await t.step(
-    "simpleMatch21",
-    () =>
-      assert.deepStrictEqual(match("storage.object.bar"), {
-        foreground: "#600000",
-        fontStyle: "none",
-      }),
-  );
-  await t.step(
-    "simpleMatch22",
-    () =>
-      assert.deepStrictEqual(match("storage.object.bar.baz"), {
-        foreground: "#600000",
-        fontStyle: "none",
-      }),
-  );
-  await t.step(
-    "simpleMatch23",
-    () =>
-      assert.deepStrictEqual(match("storage.object.bart"), {
-        fontStyle: "not set",
-      }),
-  );
-  await t.step(
-    "simpleMatch24",
-    () =>
-      assert.deepStrictEqual(match("storage.object"), { fontStyle: "not set" }),
-  );
-  await t.step(
-    "simpleMatch25",
-    () => assert.deepStrictEqual(match("storage"), { fontStyle: "not set" }),
+  function assertSimpleMatch(
+    scopeName: string,
+    scopeDepth: number,
+    fontStyle: FontStyle,
+    foreground: number,
+    background: number,
+  ): void {
+    assertMatch(scopeName, [
+      new ThemeTrieElementRule(
+        scopeDepth,
+        null,
+        fontStyle,
+        foreground,
+        background,
+      ),
+    ]);
+  }
+
+  function assertNoMatch(scopeName: string): void {
+    assertMatch(scopeName, [
+      new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
+    ]);
+  }
+
+  // matches defaults
+  assertNoMatch("");
+  assertNoMatch("bazz");
+  assertNoMatch("asdfg");
+
+  // matches source
+  assertSimpleMatch("source", 1, FontStyle.NotSet, _NOT_SET, _G);
+  assertSimpleMatch("source.ts", 1, FontStyle.NotSet, _NOT_SET, _G);
+  assertSimpleMatch("source.tss", 1, FontStyle.NotSet, _NOT_SET, _G);
+
+  // matches something
+  assertSimpleMatch("something", 1, FontStyle.NotSet, _NOT_SET, _G);
+  assertSimpleMatch("something.ts", 1, FontStyle.NotSet, _NOT_SET, _G);
+  assertSimpleMatch("something.tss", 1, FontStyle.NotSet, _NOT_SET, _G);
+
+  // matches baz
+  assertSimpleMatch("baz", 1, FontStyle.NotSet, _NOT_SET, _C);
+  assertSimpleMatch("baz.ts", 1, FontStyle.NotSet, _NOT_SET, _C);
+  assertSimpleMatch("baz.tss", 1, FontStyle.NotSet, _NOT_SET, _C);
+
+  // matches constant
+  assertSimpleMatch("constant", 1, FontStyle.Italic, _D, _NOT_SET);
+  assertSimpleMatch("constant.string", 1, FontStyle.Italic, _D, _NOT_SET);
+  assertSimpleMatch("constant.hex", 1, FontStyle.Italic, _D, _NOT_SET);
+
+  // matches constant.numeric
+  assertSimpleMatch("constant.numeric", 2, FontStyle.Italic, _E, _NOT_SET);
+  assertSimpleMatch("constant.numeric.baz", 2, FontStyle.Italic, _E, _NOT_SET);
+
+  // matches constant.numeric.hex
+  assertSimpleMatch("constant.numeric.hex", 3, FontStyle.Bold, _E, _NOT_SET);
+  assertSimpleMatch(
+    "constant.numeric.hex.baz",
+    3,
+    FontStyle.Bold,
+    _E,
+    _NOT_SET,
   );
 
-  await t.step(
-    "defaultMatch1",
-    () => assert.deepStrictEqual(match(""), { fontStyle: "not set" }),
+  // matches constant.numeric.oct
+  assertSimpleMatch(
+    "constant.numeric.oct",
+    3,
+    FontStyle.Bold | FontStyle.Italic | FontStyle.Underline,
+    _E,
+    _NOT_SET,
   );
-  await t.step(
-    "defaultMatch2",
-    () => assert.deepStrictEqual(match("bazz"), { fontStyle: "not set" }),
-  );
-  await t.step(
-    "defaultMatch3",
-    () => assert.deepStrictEqual(match("asdfg"), { fontStyle: "not set" }),
+  assertSimpleMatch(
+    "constant.numeric.oct.baz",
+    3,
+    FontStyle.Bold | FontStyle.Italic | FontStyle.Underline,
+    _E,
+    _NOT_SET,
   );
 
-  await t.step("multiMatch1", () =>
-    assert.deepStrictEqual(match("bar"), {
-      background: "#200000",
-      fontStyle: "not set",
-    }));
-  await t.step(
-    "multiMatch2",
-    () =>
-      assert.deepStrictEqual(match("source.css", "selector", "bar"), {
-        background: "#200000",
-        fontStyle: "bold",
-      }),
+  // matches constant.numeric.dec
+  assertSimpleMatch("constant.numeric.dec", 3, FontStyle.None, _F, _NOT_SET);
+  assertSimpleMatch(
+    "constant.numeric.dec.baz",
+    3,
+    FontStyle.None,
+    _F,
+    _NOT_SET,
   );
+
+  // matches storage.object.bar
+  assertSimpleMatch("storage.object.bar", 3, FontStyle.None, _H, _NOT_SET);
+  assertSimpleMatch("storage.object.bar.baz", 3, FontStyle.None, _H, _NOT_SET);
+
+  // does not match storage.object.bar
+  assertSimpleMatch(
+    "storage.object.bart",
+    0,
+    FontStyle.NotSet,
+    _NOT_SET,
+    _NOT_SET,
+  );
+  assertSimpleMatch("storage.object", 0, FontStyle.NotSet, _NOT_SET, _NOT_SET);
+  assertSimpleMatch("storage", 0, FontStyle.NotSet, _NOT_SET, _NOT_SET);
+
+  assertMatch("bar", [
+    new ThemeTrieElementRule(
+      1,
+      ["selector", "source.css"],
+      FontStyle.Bold,
+      _NOT_SET,
+      _C,
+    ),
+    new ThemeTrieElementRule(1, null, FontStyle.NotSet, _NOT_SET, _C),
+  ]);
 });
 
 Deno.test("Theme matching Microsoft/vscode#23460", () => {
@@ -494,14 +433,67 @@ Deno.test("Theme matching Microsoft/vscode#23460", () => {
     ],
   });
 
-  const path = ScopeStack.from(
-    "source.json",
+  const colorMap = new ColorMap();
+  const _NOT_SET = 0;
+  const _A = colorMap.getId("#aec2e0");
+  const _B = colorMap.getId("#14191f");
+  const _C = colorMap.getId("#FF410D");
+  const _D = colorMap.getId("#ffffff");
+
+  function assertMatch(
+    scopeName: string,
+    expected: ThemeTrieElementRule[],
+  ): void {
+    const actual = theme.match(scopeName);
+    assertEquals(actual, expected, "when matching <<" + scopeName + ">>");
+  }
+
+  // string.quoted.double.json
+  // meta.structure.dictionary.value.json
+  // meta.structure.dictionary.json
+  // source.json
+  assertMatch("string.quoted.double.json", [
+    new ThemeTrieElementRule(
+      4,
+      ["meta.structure.dictionary.value.json"],
+      FontStyle.NotSet,
+      _C,
+      _NOT_SET,
+    ),
+    new ThemeTrieElementRule(
+      4,
+      ["meta.structure.dictionary.json"],
+      FontStyle.NotSet,
+      _D,
+      _NOT_SET,
+    ),
+    new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
+  ]);
+
+  const parent3 = new ScopeListElement(null, "source.json", 0);
+  const parent2 = new ScopeListElement(
+    parent3,
     "meta.structure.dictionary.json",
-    "meta.structure.dictionary.value.json",
-    "string.quoted.double.json",
+    0,
   );
-  const result = theme.match(path);
-  assert.strictEqual(theme.getColorMap()[result!.foregroundId], "#FF410D");
+  const parent1 = new ScopeListElement(
+    parent2,
+    "meta.structure.dictionary.value.json",
+    0,
+  );
+
+  const r = ScopeListElement.mergeMetadata(
+    0,
+    parent1,
+    new ScopeMetadata(
+      "string.quoted.double.json",
+      0,
+      0,
+      theme.match("string.quoted.double.json"),
+    ),
+  );
+  const colorMap2 = theme.getColorMap();
+  assertEquals(colorMap2[StackElementMetadata.getForeground(r)], "#FF410D");
 });
 
 Deno.test("Theme parsing can parse", () => {
@@ -598,13 +590,13 @@ Deno.test("Theme parsing can parse", () => {
     new ParsedThemeRule("foo", null, 10, FontStyle.None, "#CFA", null),
   ];
 
-  assert.deepStrictEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving strcmp works", () => {
   const actual = ["bar", "z", "zu", "a", "ab", ""].sort(strcmp);
   const expected = ["", "a", "ab", "bar", "z", "zu"];
-  assert.deepStrictEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving strArrCmp works", () => {
@@ -614,7 +606,7 @@ Deno.test("Theme resolving strArrCmp works", () => {
     b: string[] | null,
     expected: number,
   ): void {
-    assert.strictEqual(strArrCmp(a, b), expected, testCase);
+    assertEquals(strArrCmp(a, b), expected, testCase);
   }
   assertStrArrCmp("001", null, null, 0);
   assertStrArrCmp("002", null, [], -1);
@@ -632,14 +624,6 @@ Deno.test("Theme resolving strArrCmp works", () => {
   assertStrArrCmp("014", ["a", "c"], ["a", "b"], 1);
 });
 
-function assertThemeEqual(actual: Theme, expected: Theme): void {
-  // Don't compare cache objects
-  assert.deepStrictEqual(
-    [actual["_colorMap"], actual["_defaults"], actual["_root"]],
-    [expected["_colorMap"], actual["_defaults"], actual["_root"]],
-  );
-}
-
 Deno.test("Theme resolving always has defaults", () => {
   const actual = Theme.createFromParsedTheme([]);
   const colorMap = new ColorMap();
@@ -648,12 +632,12 @@ Deno.test("Theme resolving always has defaults", () => {
   const _B = colorMap.getId("#ffffff");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving respects incoming defaults 1", () => {
@@ -666,12 +650,12 @@ Deno.test("Theme resolving respects incoming defaults 1", () => {
   const _B = colorMap.getId("#ffffff");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving respects incoming defaults 2", () => {
@@ -684,12 +668,12 @@ Deno.test("Theme resolving respects incoming defaults 2", () => {
   const _B = colorMap.getId("#ffffff");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving respects incoming defaults 3", () => {
@@ -702,12 +686,12 @@ Deno.test("Theme resolving respects incoming defaults 3", () => {
   const _B = colorMap.getId("#ffffff");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.Bold, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.Bold, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving respects incoming defaults 4", () => {
@@ -720,12 +704,12 @@ Deno.test("Theme resolving respects incoming defaults 4", () => {
   const _B = colorMap.getId("#ffffff");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving respects incoming defaults 5", () => {
@@ -738,12 +722,12 @@ Deno.test("Theme resolving respects incoming defaults 5", () => {
   const _B = colorMap.getId("#ff0000");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving can merge incoming defaults", () => {
@@ -758,12 +742,12 @@ Deno.test("Theme resolving can merge incoming defaults", () => {
   const _B = colorMap.getId("#ff0000");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.Bold, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.Bold, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving defaults are inherited", () => {
@@ -778,7 +762,7 @@ Deno.test("Theme resolving defaults are inherited", () => {
   const _C = colorMap.getId("#ff0000");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
       [],
@@ -789,7 +773,7 @@ Deno.test("Theme resolving defaults are inherited", () => {
       },
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving same rules get merged", () => {
@@ -805,7 +789,7 @@ Deno.test("Theme resolving same rules get merged", () => {
   const _C = colorMap.getId("#ff0000");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
       [],
@@ -816,7 +800,7 @@ Deno.test("Theme resolving same rules get merged", () => {
       },
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving rules are inherited 1", () => {
@@ -840,7 +824,7 @@ Deno.test("Theme resolving rules are inherited 1", () => {
   const _D = colorMap.getId("#00ff00");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
       [],
@@ -857,7 +841,7 @@ Deno.test("Theme resolving rules are inherited 1", () => {
       },
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving rules are inherited 2", () => {
@@ -917,7 +901,7 @@ Deno.test("Theme resolving rules are inherited 2", () => {
   const _G = colorMap.getId("#00ff00");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
       [],
@@ -973,7 +957,7 @@ Deno.test("Theme resolving rules are inherited 2", () => {
       },
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
 Deno.test("Theme resolving rules with parent scopes", () => {
@@ -1014,7 +998,7 @@ Deno.test("Theme resolving rules with parent scopes", () => {
   const _E = colorMap.getId("#200000");
   const expected = new Theme(
     colorMap,
-    new StyleAttributes(FontStyle.None, _A, _B),
+    new ThemeTrieElementRule(0, null, FontStyle.None, _A, _B),
     new ThemeTrieElement(
       new ThemeTrieElementRule(0, null, FontStyle.NotSet, _NOT_SET, _NOT_SET),
       [],
@@ -1048,159 +1032,172 @@ Deno.test("Theme resolving rules with parent scopes", () => {
       },
     ),
   );
-  assertThemeEqual(actual, expected);
+  assertEquals(actual, expected);
 });
 
-Deno.test("Theme resolving issue #38: ignores rules with invalid colors", () => {
-  const actual = parseTheme({
-    settings: [{
-      settings: {
-        background: "#222222",
-        foreground: "#cccccc",
-      },
-    }, {
-      name: "Variable",
-      scope: "variable",
-      settings: {
-        fontStyle: "",
-      },
-    }, {
-      name: "Function argument",
-      scope: "variable.parameter",
-      settings: {
-        fontStyle: "italic",
-        foreground: "",
-      },
-    }, {
-      name: "Library variable",
-      scope: "support.other.variable",
-      settings: {
-        fontStyle: "",
-      },
-    }, {
-      name: "Function argument",
-      scope: "variable.other",
-      settings: {
-        foreground: "",
-        fontStyle: "normal",
-      },
-    }, {
-      name: "Coffeescript Function argument",
-      scope: "variable.parameter.function.coffee",
-      settings: {
-        foreground: "#F9D423",
-        fontStyle: "italic",
-      },
-    }],
-  });
+Deno.test(
+  "Theme resolving issue #38: ignores rules with invalid colors",
+  () => {
+    const actual = parseTheme({
+      settings: [{
+        settings: {
+          background: "#222222",
+          foreground: "#cccccc",
+        },
+      }, {
+        name: "Variable",
+        scope: "variable",
+        settings: {
+          fontStyle: "",
+        },
+      }, {
+        name: "Function argument",
+        scope: "variable.parameter",
+        settings: {
+          fontStyle: "italic",
+          foreground: "",
+        },
+      }, {
+        name: "Library variable",
+        scope: "support.other.variable",
+        settings: {
+          fontStyle: "",
+        },
+      }, {
+        name: "Function argument",
+        scope: "variable.other",
+        settings: {
+          foreground: "",
+          fontStyle: "normal",
+        },
+      }, {
+        name: "Coffeescript Function argument",
+        scope: "variable.parameter.function.coffee",
+        settings: {
+          foreground: "#F9D423",
+          fontStyle: "italic",
+        },
+      }],
+    });
 
-  const expected = [
-    new ParsedThemeRule("", null, 0, FontStyle.NotSet, "#cccccc", "#222222"),
-    new ParsedThemeRule("variable", null, 1, FontStyle.None, null, null),
-    new ParsedThemeRule(
-      "variable.parameter",
-      null,
-      2,
-      FontStyle.Italic,
-      null,
-      null,
-    ),
-    new ParsedThemeRule(
-      "support.other.variable",
-      null,
-      3,
-      FontStyle.None,
-      null,
-      null,
-    ),
-    new ParsedThemeRule("variable.other", null, 4, FontStyle.None, null, null),
-    new ParsedThemeRule(
-      "variable.parameter.function.coffee",
-      null,
-      5,
-      FontStyle.Italic,
-      "#F9D423",
-      null,
-    ),
-  ];
+    const expected = [
+      new ParsedThemeRule("", null, 0, FontStyle.NotSet, "#cccccc", "#222222"),
+      new ParsedThemeRule("variable", null, 1, FontStyle.None, null, null),
+      new ParsedThemeRule(
+        "variable.parameter",
+        null,
+        2,
+        FontStyle.Italic,
+        null,
+        null,
+      ),
+      new ParsedThemeRule(
+        "support.other.variable",
+        null,
+        3,
+        FontStyle.None,
+        null,
+        null,
+      ),
+      new ParsedThemeRule(
+        "variable.other",
+        null,
+        4,
+        FontStyle.None,
+        null,
+        null,
+      ),
+      new ParsedThemeRule(
+        "variable.parameter.function.coffee",
+        null,
+        5,
+        FontStyle.Italic,
+        "#F9D423",
+        null,
+      ),
+    ];
 
-  assert.deepStrictEqual(actual, expected);
-});
+    assertEquals(actual, expected);
+  },
+);
 
-Deno.test("Theme resolving issue #35: Trailing comma in a tmTheme scope selector", () => {
-  const actual = parseTheme({
-    settings: [{
-      settings: {
-        background: "#25292C",
-        foreground: "#EFEFEF",
-      },
-    }, {
-      name: "CSS at-rule keyword control",
-      scope: [
-        "meta.at-rule.return.scss,",
-        "meta.at-rule.return.scss punctuation.definition,",
-        "meta.at-rule.else.scss,",
-        "meta.at-rule.else.scss punctuation.definition,",
-        "meta.at-rule.if.scss,",
-        "meta.at-rule.if.scss punctuation.definition,",
-      ].join("\n"),
-      settings: {
-        foreground: "#CC7832",
-      },
-    }],
-  });
+Deno.test(
+  "Theme resolving issue #35: Trailing comma in a tmTheme scope selector",
+  () => {
+    const actual = parseTheme({
+      settings: [{
+        settings: {
+          background: "#25292C",
+          foreground: "#EFEFEF",
+        },
+      }, {
+        name: "CSS at-rule keyword control",
+        scope: [
+          "meta.at-rule.return.scss,",
+          "meta.at-rule.return.scss punctuation.definition,",
+          "meta.at-rule.else.scss,",
+          "meta.at-rule.else.scss punctuation.definition,",
+          "meta.at-rule.if.scss,",
+          "meta.at-rule.if.scss punctuation.definition,",
+        ].join("\n"),
+        settings: {
+          foreground: "#CC7832",
+        },
+      }],
+    });
 
-  const expected = [
-    new ParsedThemeRule("", null, 0, FontStyle.NotSet, "#EFEFEF", "#25292C"),
-    new ParsedThemeRule(
-      "meta.at-rule.return.scss",
-      null,
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-    new ParsedThemeRule(
-      "punctuation.definition",
-      ["meta.at-rule.return.scss"],
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-    new ParsedThemeRule(
-      "meta.at-rule.else.scss",
-      null,
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-    new ParsedThemeRule(
-      "punctuation.definition",
-      ["meta.at-rule.else.scss"],
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-    new ParsedThemeRule(
-      "meta.at-rule.if.scss",
-      null,
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-    new ParsedThemeRule(
-      "punctuation.definition",
-      ["meta.at-rule.if.scss"],
-      1,
-      FontStyle.NotSet,
-      "#CC7832",
-      null,
-    ),
-  ];
+    const expected = [
+      new ParsedThemeRule("", null, 0, FontStyle.NotSet, "#EFEFEF", "#25292C"),
+      new ParsedThemeRule(
+        "meta.at-rule.return.scss",
+        null,
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+      new ParsedThemeRule(
+        "punctuation.definition",
+        ["meta.at-rule.return.scss"],
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+      new ParsedThemeRule(
+        "meta.at-rule.else.scss",
+        null,
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+      new ParsedThemeRule(
+        "punctuation.definition",
+        ["meta.at-rule.else.scss"],
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+      new ParsedThemeRule(
+        "meta.at-rule.if.scss",
+        null,
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+      new ParsedThemeRule(
+        "punctuation.definition",
+        ["meta.at-rule.if.scss"],
+        1,
+        FontStyle.NotSet,
+        "#CC7832",
+        null,
+      ),
+    ];
 
-  assert.deepStrictEqual(actual, expected);
-});
+    assertEquals(actual, expected);
+  },
+);

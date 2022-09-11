@@ -2,39 +2,41 @@
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
 
-import {
-  BalancedBracketSelectors,
-  createGrammar,
-  Grammar,
-  IGrammarRepository,
-  IThemeProvider,
-} from "./grammar/mod.ts";
-import { IRawGrammar } from "./raw_grammar.ts";
+import { createGrammar, Grammar, IGrammarRepository } from "./grammar.ts";
+import { IRawGrammar } from "./types.ts";
 import { IEmbeddedLanguagesMap, IGrammar, ITokenTypeMap } from "./mod.ts";
-import { ScopeName, ScopeStack, StyleAttributes, Theme } from "./theme.ts";
-import { IOnigLib } from "./onig_lib.ts";
+import { Theme, ThemeTrieElementRule } from "./theme.ts";
+import { IOnigLib } from "./types.ts";
 
-export class SyncRegistry implements IGrammarRepository, IThemeProvider {
-  private readonly _grammars = new Map<ScopeName, Grammar>();
-  private readonly _rawGrammars = new Map<ScopeName, IRawGrammar>();
-  private readonly _injectionGrammars = new Map<ScopeName, ScopeName[]>();
+export class SyncRegistry implements IGrammarRepository {
+  private readonly _grammars: { [scopeName: string]: Grammar };
+  private readonly _rawGrammars: { [scopeName: string]: IRawGrammar };
+  private readonly _injectionGrammars: { [scopeName: string]: string[] };
   private _theme: Theme;
+  private readonly _onigLibPromise: Promise<IOnigLib>;
 
-  constructor(
-    theme: Theme,
-    private readonly _onigLibPromise: Promise<IOnigLib>,
-  ) {
+  constructor(theme: Theme, onigLibPromise: Promise<IOnigLib>) {
     this._theme = theme;
+    this._grammars = {};
+    this._rawGrammars = {};
+    this._injectionGrammars = {};
+    this._onigLibPromise = onigLibPromise;
   }
 
   public dispose(): void {
-    for (const grammar of this._grammars.values()) {
-      grammar.dispose();
+    for (const scopeName in this._grammars) {
+      if (Object.prototype.hasOwnProperty.call(this._grammars, scopeName)) {
+        this._grammars[scopeName].dispose();
+      }
     }
   }
 
   public setTheme(theme: Theme): void {
     this._theme = theme;
+    Object.keys(this._grammars).forEach((scopeName) => {
+      const grammar = this._grammars[scopeName];
+      grammar.onDidChangeTheme();
+    });
   }
 
   public getColorMap(): string[] {
@@ -46,72 +48,67 @@ export class SyncRegistry implements IGrammarRepository, IThemeProvider {
    */
   public addGrammar(
     grammar: IRawGrammar,
-    injectionScopeNames?: ScopeName[],
+    injectionScopeNames?: string[],
   ): void {
-    this._rawGrammars.set(grammar.scopeName, grammar);
+    this._rawGrammars[grammar.scopeName] = grammar;
 
     if (injectionScopeNames) {
-      this._injectionGrammars.set(grammar.scopeName, injectionScopeNames);
+      this._injectionGrammars[grammar.scopeName] = injectionScopeNames;
     }
   }
 
   /**
    * Lookup a raw grammar.
    */
-  public lookup(scopeName: ScopeName): IRawGrammar | undefined {
-    return this._rawGrammars.get(scopeName)!;
+  public lookup(scopeName: string): IRawGrammar | undefined {
+    return this._rawGrammars[scopeName];
   }
 
   /**
    * Returns the injections for the given grammar
    */
-  public injections(targetScope: ScopeName): ScopeName[] {
-    return this._injectionGrammars.get(targetScope)!;
+  public injections(targetScope: string): string[] {
+    return this._injectionGrammars[targetScope];
   }
 
   /**
    * Get the default theme settings
    */
-  public getDefaults(): StyleAttributes {
+  public getDefaults(): ThemeTrieElementRule {
     return this._theme.getDefaults();
   }
 
   /**
    * Match a scope in the theme.
    */
-  public themeMatch(scopePath: ScopeStack): StyleAttributes | null {
-    return this._theme.match(scopePath);
+  public themeMatch(scopeName: string): ThemeTrieElementRule[] {
+    return this._theme.match(scopeName);
   }
 
   /**
    * Lookup a grammar.
    */
   public async grammarForScopeName(
-    scopeName: ScopeName,
+    scopeName: string,
     initialLanguage: number,
     embeddedLanguages: IEmbeddedLanguagesMap | null,
     tokenTypes: ITokenTypeMap | null,
-    balancedBracketSelectors: BalancedBracketSelectors | null,
   ): Promise<IGrammar | null> {
-    if (!this._grammars.has(scopeName)) {
-      const rawGrammar = this._rawGrammars.get(scopeName)!;
+    if (!this._grammars[scopeName]) {
+      const rawGrammar = this._rawGrammars[scopeName];
       if (!rawGrammar) {
         return null;
       }
-      this._grammars.set(
+      this._grammars[scopeName] = createGrammar(
         scopeName,
-        createGrammar(
-          scopeName,
-          rawGrammar,
-          initialLanguage,
-          embeddedLanguages,
-          tokenTypes,
-          balancedBracketSelectors,
-          this,
-          await this._onigLibPromise,
-        ),
+        rawGrammar,
+        initialLanguage,
+        embeddedLanguages,
+        tokenTypes,
+        this,
+        await this._onigLibPromise,
       );
     }
-    return this._grammars.get(scopeName)!;
+    return this._grammars[scopeName];
   }
 }

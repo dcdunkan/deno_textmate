@@ -35,7 +35,7 @@ export function parseWithLocation(
 /**
  * A very fast plist parser
  */
-export function parsePLIST(content: string): any {
+export function parse(content: string): any {
   return _parse(content, null, null);
 }
 

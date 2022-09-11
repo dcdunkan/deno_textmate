@@ -1,50 +1,26 @@
 // deno-lint-ignore-file no-explicit-any
-import {
-  basename,
-  escapeRegExpCharacters,
-  mergeObjects,
-  OrMask,
-  RegexSource,
-} from "./utils.ts";
-import {
-  FindOption,
-  IOnigCaptureIndex,
-  IOnigLib,
-  OnigScanner,
-  OnigString,
-} from "./onig_lib.ts";
+/*---------------------------------------------------------
+ * Copyright (C) Microsoft Corporation. All rights reserved.
+ *--------------------------------------------------------*/
+
+import { basename, mergeObjects, RegexSource } from "./utils.ts";
 import {
   ILocation,
+  IOnigCaptureIndex,
+  IOnigLib,
   IRawCaptures,
   IRawGrammar,
   IRawRepository,
   IRawRule,
-} from "./raw_grammar.ts";
-import { IncludeReferenceKind, parseInclude } from "./grammar/grammar_deps.ts";
+  OnigScanner,
+} from "./types.ts";
 
 const HAS_BACK_REFERENCES = /\\(\d+)/;
 const BACK_REFERENCING_END = /\\(\d+)/g;
 
-const ruleIdSymbol = Symbol("RuleId");
-export type RuleId = { __brand: typeof ruleIdSymbol };
-
-// This is a special constant to indicate that the end regexp matched.
-export const endRuleId = -1;
-
-// This is a special constant to indicate that the while regexp matched.
-export const whileRuleId = -2;
-
-export function ruleIdFromNumber(id: number): RuleId {
-  return id as any as RuleId;
-}
-
-export function ruleIdToNumber(id: RuleId): number {
-  return id as any as number;
-}
-
 export interface IRuleRegistry {
-  getRule(ruleId: RuleId): Rule;
-  registerRule<T extends Rule>(factory: (id: RuleId) => T): T;
+  getRule(patternId: number): Rule;
+  registerRule<T extends Rule>(factory: (id: number) => T): T;
 }
 
 export interface IGrammarRegistry {
@@ -57,9 +33,27 @@ export interface IGrammarRegistry {
 export interface IRuleFactoryHelper extends IRuleRegistry, IGrammarRegistry {
 }
 
+export class CompiledRule {
+  public readonly debugRegExps: string[];
+  public readonly rules: number[];
+  public readonly scanner: OnigScanner;
+
+  constructor(onigLib: IOnigLib, regExps: string[], rules: number[]) {
+    this.debugRegExps = regExps;
+    this.rules = rules;
+    this.scanner = onigLib.createOnigScanner(regExps);
+  }
+
+  public dispose(): void {
+    if (typeof this.scanner.dispose === "function") {
+      this.scanner.dispose();
+    }
+  }
+}
+
 export abstract class Rule {
   public readonly $location: ILocation | undefined;
-  public readonly id: RuleId;
+  public readonly id: number;
 
   private readonly _nameIsCapturing: boolean;
   private readonly _name: string | null;
@@ -69,7 +63,7 @@ export abstract class Rule {
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | null | undefined,
     contentName: string | null | undefined,
   ) {
@@ -117,9 +111,10 @@ export abstract class Rule {
     );
   }
 
-  public abstract collectPatterns(
+  public abstract collectPatternsRecursive(
     grammar: IRuleRegistry,
     out: RegExpSourceList,
+    isFirst: boolean,
   ): void;
 
   public abstract compile(
@@ -136,19 +131,19 @@ export abstract class Rule {
 }
 
 export interface ICompilePatternsResult {
-  readonly patterns: RuleId[];
+  readonly patterns: number[];
   readonly hasMissingPatterns: boolean;
 }
 
 export class CaptureRule extends Rule {
-  public readonly retokenizeCapturedWithRuleId: RuleId | 0;
+  public readonly retokenizeCapturedWithRuleId: number;
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | null | undefined,
     contentName: string | null | undefined,
-    retokenizeCapturedWithRuleId: RuleId | 0,
+    retokenizeCapturedWithRuleId: number,
   ) {
     super($location, id, name, contentName);
     this.retokenizeCapturedWithRuleId = retokenizeCapturedWithRuleId;
@@ -158,24 +153,336 @@ export class CaptureRule extends Rule {
     // nothing to dispose
   }
 
-  public collectPatterns(_grammar: IRuleRegistry, _out: RegExpSourceList) {
+  public collectPatternsRecursive() {
     throw new Error("Not supported!");
   }
 
-  public compile(
-    _grammar: IRuleRegistry & IOnigLib,
-    _endRegexSource: string,
-  ): CompiledRule {
+  public compile(): CompiledRule {
     throw new Error("Not supported!");
+  }
+
+  public compileAG(): CompiledRule {
+    throw new Error("Not supported!");
+  }
+}
+
+interface IRegExpSourceAnchorCache {
+  readonly A0_G0: string;
+  readonly A0_G1: string;
+  readonly A1_G0: string;
+  readonly A1_G1: string;
+}
+
+export class RegExpSource {
+  public source: string;
+  public readonly ruleId: number;
+  public hasAnchor: boolean;
+  public readonly hasBackReferences: boolean;
+  private _anchorCache: IRegExpSourceAnchorCache | null;
+
+  constructor(
+    regExpSource: string,
+    ruleId: number,
+    handleAnchors: boolean = true,
+  ) {
+    if (handleAnchors) {
+      if (regExpSource) {
+        const len = regExpSource.length;
+        let lastPushedPos = 0;
+        const output: string[] = [];
+
+        let hasAnchor = false;
+        for (let pos = 0; pos < len; pos++) {
+          const ch = regExpSource.charAt(pos);
+
+          if (ch === "\\") {
+            if (pos + 1 < len) {
+              const nextCh = regExpSource.charAt(pos + 1);
+              if (nextCh === "z") {
+                output.push(regExpSource.substring(lastPushedPos, pos));
+                output.push("$(?!\\n)(?<!\\n)");
+                lastPushedPos = pos + 2;
+              } else if (nextCh === "A" || nextCh === "G") {
+                hasAnchor = true;
+              }
+              pos++;
+            }
+          }
+        }
+
+        this.hasAnchor = hasAnchor;
+        if (lastPushedPos === 0) {
+          // No \z hit
+          this.source = regExpSource;
+        } else {
+          output.push(regExpSource.substring(lastPushedPos, len));
+          this.source = output.join("");
+        }
+      } else {
+        this.hasAnchor = false;
+        this.source = regExpSource;
+      }
+    } else {
+      this.hasAnchor = false;
+      this.source = regExpSource;
+    }
+
+    if (this.hasAnchor) {
+      this._anchorCache = this._buildAnchorCache();
+    } else {
+      this._anchorCache = null;
+    }
+
+    this.ruleId = ruleId;
+    this.hasBackReferences = HAS_BACK_REFERENCES.test(this.source);
+
+    // console.log('input: ' + regExpSource + ' => ' + this.source + ', ' + this.hasAnchor);
+  }
+
+  public clone(): RegExpSource {
+    return new RegExpSource(this.source, this.ruleId, true);
+  }
+
+  public setSource(newSource: string): void {
+    if (this.source === newSource) {
+      return;
+    }
+    this.source = newSource;
+
+    if (this.hasAnchor) {
+      this._anchorCache = this._buildAnchorCache();
+    }
+  }
+
+  public resolveBackReferences(
+    lineText: string,
+    captureIndices: IOnigCaptureIndex[],
+  ): string {
+    const capturedValues = captureIndices.map((capture) => {
+      return lineText.substring(capture.start, capture.end);
+    });
+    BACK_REFERENCING_END.lastIndex = 0;
+    return this.source.replace(BACK_REFERENCING_END, (_, g1) => {
+      return escapeRegExpCharacters(capturedValues[parseInt(g1, 10)] || "");
+    });
+  }
+
+  private _buildAnchorCache(): IRegExpSourceAnchorCache {
+    const A0_G0_result: string[] = [];
+    const A0_G1_result: string[] = [];
+    const A1_G0_result: string[] = [];
+    const A1_G1_result: string[] = [];
+
+    let pos: number,
+      len: number,
+      ch: string,
+      nextCh: string;
+
+    for (pos = 0, len = this.source.length; pos < len; pos++) {
+      ch = this.source.charAt(pos);
+      A0_G0_result[pos] = ch;
+      A0_G1_result[pos] = ch;
+      A1_G0_result[pos] = ch;
+      A1_G1_result[pos] = ch;
+
+      if (ch === "\\") {
+        if (pos + 1 < len) {
+          nextCh = this.source.charAt(pos + 1);
+          if (nextCh === "A") {
+            A0_G0_result[pos + 1] = "\uFFFF";
+            A0_G1_result[pos + 1] = "\uFFFF";
+            A1_G0_result[pos + 1] = "A";
+            A1_G1_result[pos + 1] = "A";
+          } else if (nextCh === "G") {
+            A0_G0_result[pos + 1] = "\uFFFF";
+            A0_G1_result[pos + 1] = "G";
+            A1_G0_result[pos + 1] = "\uFFFF";
+            A1_G1_result[pos + 1] = "G";
+          } else {
+            A0_G0_result[pos + 1] = nextCh;
+            A0_G1_result[pos + 1] = nextCh;
+            A1_G0_result[pos + 1] = nextCh;
+            A1_G1_result[pos + 1] = nextCh;
+          }
+          pos++;
+        }
+      }
+    }
+
+    return {
+      A0_G0: A0_G0_result.join(""),
+      A0_G1: A0_G1_result.join(""),
+      A1_G0: A1_G0_result.join(""),
+      A1_G1: A1_G1_result.join(""),
+    };
+  }
+
+  public resolveAnchors(allowA: boolean, allowG: boolean): string {
+    if (!this.hasAnchor || !this._anchorCache) {
+      return this.source;
+    }
+
+    if (allowA) {
+      if (allowG) {
+        return this._anchorCache.A1_G1;
+      } else {
+        return this._anchorCache.A1_G0;
+      }
+    } else {
+      if (allowG) {
+        return this._anchorCache.A0_G1;
+      } else {
+        return this._anchorCache.A0_G0;
+      }
+    }
+  }
+}
+
+interface IRegExpSourceListAnchorCache {
+  A0_G0: CompiledRule | null;
+  A0_G1: CompiledRule | null;
+  A1_G0: CompiledRule | null;
+  A1_G1: CompiledRule | null;
+}
+
+export class RegExpSourceList {
+  private readonly _items: RegExpSource[];
+  private _hasAnchors: boolean;
+  private _cached: CompiledRule | null;
+  private _anchorCache: IRegExpSourceListAnchorCache;
+
+  constructor() {
+    this._items = [];
+    this._hasAnchors = false;
+    this._cached = null;
+    this._anchorCache = {
+      A0_G0: null,
+      A0_G1: null,
+      A1_G0: null,
+      A1_G1: null,
+    };
+  }
+
+  public dispose(): void {
+    this._disposeCaches();
+  }
+
+  private _disposeCaches(): void {
+    if (this._cached) {
+      this._cached.dispose();
+      this._cached = null;
+    }
+    if (this._anchorCache.A0_G0) {
+      this._anchorCache.A0_G0.dispose();
+      this._anchorCache.A0_G0 = null;
+    }
+    if (this._anchorCache.A0_G1) {
+      this._anchorCache.A0_G1.dispose();
+      this._anchorCache.A0_G1 = null;
+    }
+    if (this._anchorCache.A1_G0) {
+      this._anchorCache.A1_G0.dispose();
+      this._anchorCache.A1_G0 = null;
+    }
+    if (this._anchorCache.A1_G1) {
+      this._anchorCache.A1_G1.dispose();
+      this._anchorCache.A1_G1 = null;
+    }
+  }
+
+  public push(item: RegExpSource): void {
+    this._items.push(item);
+    this._hasAnchors = this._hasAnchors || item.hasAnchor;
+  }
+
+  public unshift(item: RegExpSource): void {
+    this._items.unshift(item);
+    this._hasAnchors = this._hasAnchors || item.hasAnchor;
+  }
+
+  public length(): number {
+    return this._items.length;
+  }
+
+  public setSource(index: number, newSource: string): void {
+    if (this._items[index].source !== newSource) {
+      // bust the cache
+      this._disposeCaches();
+      this._items[index].setSource(newSource);
+    }
+  }
+
+  public compile(onigLib: IOnigLib): CompiledRule {
+    if (!this._cached) {
+      const regExps = this._items.map((e) => e.source);
+      this._cached = new CompiledRule(
+        onigLib,
+        regExps,
+        this._items.map((e) => e.ruleId),
+      );
+    }
+    return this._cached;
   }
 
   public compileAG(
-    _grammar: IRuleRegistry & IOnigLib,
-    _endRegexSource: string,
-    _allowA: boolean,
-    _allowG: boolean,
+    onigLib: IOnigLib,
+    allowA: boolean,
+    allowG: boolean,
   ): CompiledRule {
-    throw new Error("Not supported!");
+    if (!this._hasAnchors) {
+      return this.compile(onigLib);
+    } else {
+      if (allowA) {
+        if (allowG) {
+          if (!this._anchorCache.A1_G1) {
+            this._anchorCache.A1_G1 = this._resolveAnchors(
+              onigLib,
+              allowA,
+              allowG,
+            );
+          }
+          return this._anchorCache.A1_G1;
+        } else {
+          if (!this._anchorCache.A1_G0) {
+            this._anchorCache.A1_G0 = this._resolveAnchors(
+              onigLib,
+              allowA,
+              allowG,
+            );
+          }
+          return this._anchorCache.A1_G0;
+        }
+      } else {
+        if (allowG) {
+          if (!this._anchorCache.A0_G1) {
+            this._anchorCache.A0_G1 = this._resolveAnchors(
+              onigLib,
+              allowA,
+              allowG,
+            );
+          }
+          return this._anchorCache.A0_G1;
+        } else {
+          if (!this._anchorCache.A0_G0) {
+            this._anchorCache.A0_G0 = this._resolveAnchors(
+              onigLib,
+              allowA,
+              allowG,
+            );
+          }
+          return this._anchorCache.A0_G0;
+        }
+      }
+    }
+  }
+
+  private _resolveAnchors(
+    onigLib: IOnigLib,
+    allowA: boolean,
+    allowG: boolean,
+  ): CompiledRule {
+    const regExps = this._items.map((e) => e.resolveAnchors(allowA, allowG));
+    return new CompiledRule(onigLib, regExps, this._items.map((e) => e.ruleId));
   }
 }
 
@@ -186,7 +493,7 @@ export class MatchRule extends Rule {
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | undefined,
     match: string,
     captures: (CaptureRule | null)[],
@@ -208,7 +515,11 @@ export class MatchRule extends Rule {
     return `${this._match.source}`;
   }
 
-  public collectPatterns(_grammar: IRuleRegistry, out: RegExpSourceList) {
+  public collectPatternsRecursive(
+    _grammar: IRuleRegistry,
+    out: RegExpSourceList,
+    _isFirst: boolean,
+  ) {
     out.push(this._match);
   }
 
@@ -236,7 +547,11 @@ export class MatchRule extends Rule {
   ): RegExpSourceList {
     if (!this._cachedCompiledPatterns) {
       this._cachedCompiledPatterns = new RegExpSourceList();
-      this.collectPatterns(grammar, this._cachedCompiledPatterns);
+      this.collectPatternsRecursive(
+        grammar,
+        this._cachedCompiledPatterns,
+        true,
+      );
     }
     return this._cachedCompiledPatterns;
   }
@@ -244,12 +559,12 @@ export class MatchRule extends Rule {
 
 export class IncludeOnlyRule extends Rule {
   public readonly hasMissingPatterns: boolean;
-  public readonly patterns: RuleId[];
+  public readonly patterns: number[];
   private _cachedCompiledPatterns: RegExpSourceList | null;
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | null | undefined,
     contentName: string | null | undefined,
     patterns: ICompilePatternsResult,
@@ -267,15 +582,24 @@ export class IncludeOnlyRule extends Rule {
     }
   }
 
-  public collectPatterns(grammar: IRuleRegistry, out: RegExpSourceList) {
-    for (const pattern of this.patterns) {
-      const rule = grammar.getRule(pattern);
-      rule.collectPatterns(grammar, out);
+  public collectPatternsRecursive(
+    grammar: IRuleRegistry,
+    out: RegExpSourceList,
+    _isFirst: boolean,
+  ) {
+    let i: number,
+      len: number,
+      rule: Rule;
+
+    for (i = 0, len = this.patterns.length; i < len; i++) {
+      rule = grammar.getRule(this.patterns[i]);
+      rule.collectPatternsRecursive(grammar, out, false);
     }
   }
 
   public compile(
     grammar: IRuleRegistry & IOnigLib,
+    _endRegexSource: string,
   ): CompiledRule {
     return this._getCachedCompiledPatterns(grammar).compile(grammar);
   }
@@ -298,10 +622,18 @@ export class IncludeOnlyRule extends Rule {
   ): RegExpSourceList {
     if (!this._cachedCompiledPatterns) {
       this._cachedCompiledPatterns = new RegExpSourceList();
-      this.collectPatterns(grammar, this._cachedCompiledPatterns);
+      this.collectPatternsRecursive(
+        grammar,
+        this._cachedCompiledPatterns,
+        true,
+      );
     }
     return this._cachedCompiledPatterns;
   }
+}
+
+function escapeRegExpCharacters(value: string): string {
+  return value.replace(/[\-\\\{\}\*\+\?\|\^\$\.\,\[\]\(\)\#\s]/g, "\\$&");
 }
 
 export class BeginEndRule extends Rule {
@@ -312,12 +644,12 @@ export class BeginEndRule extends Rule {
   public readonly endCaptures: (CaptureRule | null)[];
   public readonly applyEndPatternLast: boolean;
   public readonly hasMissingPatterns: boolean;
-  public readonly patterns: RuleId[];
+  public readonly patterns: number[];
   private _cachedCompiledPatterns: RegExpSourceList | null;
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | null | undefined,
     contentName: string | null | undefined,
     begin: string,
@@ -361,8 +693,23 @@ export class BeginEndRule extends Rule {
     return this._end.resolveBackReferences(lineText, captureIndices);
   }
 
-  public collectPatterns(_grammar: IRuleRegistry, out: RegExpSourceList) {
-    out.push(this._begin);
+  public collectPatternsRecursive(
+    grammar: IRuleRegistry,
+    out: RegExpSourceList,
+    isFirst: boolean,
+  ) {
+    if (isFirst) {
+      let i: number,
+        len: number,
+        rule: Rule;
+
+      for (i = 0, len = this.patterns.length; i < len; i++) {
+        rule = grammar.getRule(this.patterns[i]);
+        rule.collectPatternsRecursive(grammar, out, false);
+      }
+    } else {
+      out.push(this._begin);
+    }
   }
 
   public compile(
@@ -394,10 +741,11 @@ export class BeginEndRule extends Rule {
     if (!this._cachedCompiledPatterns) {
       this._cachedCompiledPatterns = new RegExpSourceList();
 
-      for (const pattern of this.patterns) {
-        const rule = grammar.getRule(pattern);
-        rule.collectPatterns(grammar, this._cachedCompiledPatterns);
-      }
+      this.collectPatternsRecursive(
+        grammar,
+        this._cachedCompiledPatterns,
+        true,
+      );
 
       if (this.applyEndPatternLast) {
         this._cachedCompiledPatterns.push(
@@ -427,18 +775,16 @@ export class BeginWhileRule extends Rule {
   private readonly _begin: RegExpSource;
   public readonly beginCaptures: (CaptureRule | null)[];
   public readonly whileCaptures: (CaptureRule | null)[];
-  private readonly _while: RegExpSource<RuleId | typeof whileRuleId>;
+  private readonly _while: RegExpSource;
   public readonly whileHasBackReferences: boolean;
   public readonly hasMissingPatterns: boolean;
-  public readonly patterns: RuleId[];
+  public readonly patterns: number[];
   private _cachedCompiledPatterns: RegExpSourceList | null;
-  private _cachedCompiledWhilePatterns:
-    | RegExpSourceList<RuleId | typeof whileRuleId>
-    | null;
+  private _cachedCompiledWhilePatterns: RegExpSourceList | null;
 
   constructor(
     $location: ILocation | undefined,
-    id: RuleId,
+    id: number,
     name: string | null | undefined,
     contentName: string | null | undefined,
     begin: string,
@@ -451,7 +797,7 @@ export class BeginWhileRule extends Rule {
     this._begin = new RegExpSource(begin, this.id);
     this.beginCaptures = beginCaptures;
     this.whileCaptures = whileCaptures;
-    this._while = new RegExpSource(_while, whileRuleId);
+    this._while = new RegExpSource(_while, -2);
     this.whileHasBackReferences = this._while.hasBackReferences;
     this.patterns = patterns.patterns;
     this.hasMissingPatterns = patterns.hasMissingPatterns;
@@ -485,8 +831,23 @@ export class BeginWhileRule extends Rule {
     return this._while.resolveBackReferences(lineText, captureIndices);
   }
 
-  public collectPatterns(_grammar: IRuleRegistry, out: RegExpSourceList) {
-    out.push(this._begin);
+  public collectPatternsRecursive(
+    grammar: IRuleRegistry,
+    out: RegExpSourceList,
+    isFirst: boolean,
+  ) {
+    if (isFirst) {
+      let i: number,
+        len: number,
+        rule: Rule;
+
+      for (i = 0, len = this.patterns.length; i < len; i++) {
+        rule = grammar.getRule(this.patterns[i]);
+        rule.collectPatternsRecursive(grammar, out, false);
+      }
+    } else {
+      out.push(this._begin);
+    }
   }
 
   public compile(
@@ -513,11 +874,11 @@ export class BeginWhileRule extends Rule {
   ): RegExpSourceList {
     if (!this._cachedCompiledPatterns) {
       this._cachedCompiledPatterns = new RegExpSourceList();
-
-      for (const pattern of this.patterns) {
-        const rule = grammar.getRule(pattern);
-        rule.collectPatterns(grammar, this._cachedCompiledPatterns);
-      }
+      this.collectPatternsRecursive(
+        grammar,
+        this._cachedCompiledPatterns,
+        true,
+      );
     }
     return this._cachedCompiledPatterns;
   }
@@ -525,7 +886,7 @@ export class BeginWhileRule extends Rule {
   public compileWhile(
     grammar: IRuleRegistry & IOnigLib,
     endRegexSource: string | null,
-  ): CompiledRule<RuleId | typeof whileRuleId> {
+  ): CompiledRule {
     return this._getCachedCompiledWhilePatterns(grammar, endRegexSource)
       .compile(grammar);
   }
@@ -535,7 +896,7 @@ export class BeginWhileRule extends Rule {
     endRegexSource: string | null,
     allowA: boolean,
     allowG: boolean,
-  ): CompiledRule<RuleId | typeof whileRuleId> {
+  ): CompiledRule {
     return this._getCachedCompiledWhilePatterns(grammar, endRegexSource)
       .compileAG(grammar, allowA, allowG);
   }
@@ -543,11 +904,9 @@ export class BeginWhileRule extends Rule {
   private _getCachedCompiledWhilePatterns(
     _grammar: IRuleRegistry & IOnigLib,
     endRegexSource: string | null,
-  ): RegExpSourceList<RuleId | typeof whileRuleId> {
+  ): RegExpSourceList {
     if (!this._cachedCompiledWhilePatterns) {
-      this._cachedCompiledWhilePatterns = new RegExpSourceList<
-        RuleId | typeof whileRuleId
-      >();
+      this._cachedCompiledWhilePatterns = new RegExpSourceList();
       this._cachedCompiledWhilePatterns.push(
         this._while.hasBackReferences ? this._while.clone() : this._while,
       );
@@ -568,7 +927,7 @@ export class RuleFactory {
     $location: ILocation | undefined,
     name: string | null | undefined,
     contentName: string | null | undefined,
-    retokenizeCapturedWithRuleId: RuleId | 0,
+    retokenizeCapturedWithRuleId: number,
   ): CaptureRule {
     return helper.registerRule((id) => {
       return new CaptureRule(
@@ -585,7 +944,7 @@ export class RuleFactory {
     desc: IRawRule,
     helper: IRuleFactoryHelper,
     repository: IRawRepository,
-  ): RuleId {
+  ): number {
     if (!desc.id) {
       helper.registerRule((id) => {
         desc.id = id;
@@ -696,7 +1055,7 @@ export class RuleFactory {
           continue;
         }
         const numericCaptureId = parseInt(captureId, 10);
-        let retokenizeCapturedWithRuleId: RuleId | 0 = 0;
+        let retokenizeCapturedWithRuleId = 0;
         if (captures[captureId].patterns) {
           retokenizeCapturedWithRuleId = RuleFactory.getCompiledRuleId(
             captures[captureId],
@@ -722,86 +1081,88 @@ export class RuleFactory {
     helper: IRuleFactoryHelper,
     repository: IRawRepository,
   ): ICompilePatternsResult {
-    const r: RuleId[] = [];
+    const r: number[] = [];
 
     if (patterns) {
       for (let i = 0, len = patterns.length; i < len; i++) {
         const pattern = patterns[i];
-        let ruleId: RuleId | -1 = -1;
+        let patternId = -1;
 
         if (pattern.include) {
-          const reference = parseInclude(pattern.include);
-
-          switch (reference.kind) {
-            case IncludeReferenceKind.Base:
-            case IncludeReferenceKind.Self:
-              ruleId = RuleFactory.getCompiledRuleId(
-                repository[pattern.include],
+          if (pattern.include.charAt(0) === "#") {
+            // Local include found in `repository`
+            const localIncludedRule = repository[pattern.include.substr(1)];
+            if (localIncludedRule) {
+              patternId = RuleFactory.getCompiledRuleId(
+                localIncludedRule,
                 helper,
                 repository,
               );
-              break;
-
-            case IncludeReferenceKind.RelativeReference: {
-              // Local include found in `repository`
-              const localIncludedRule = repository[reference.ruleName];
-              if (localIncludedRule) {
-                ruleId = RuleFactory.getCompiledRuleId(
-                  localIncludedRule,
-                  helper,
-                  repository,
-                );
-              } else {
-                // console.warn('CANNOT find rule for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
-              }
-              break;
+            } else {
+              // console.warn('CANNOT find rule for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
             }
-            case IncludeReferenceKind.TopLevelReference:
-            case IncludeReferenceKind.TopLevelRepositoryReference: {
-              const externalGrammarName = reference.scopeName;
-              const externalGrammarInclude = reference.kind ===
-                  IncludeReferenceKind.TopLevelRepositoryReference
-                ? reference.ruleName
-                : null;
+          } else if (
+            pattern.include === "$base" || pattern.include === "$self"
+          ) {
+            // Special include also found in `repository`
+            patternId = RuleFactory.getCompiledRuleId(
+              repository[pattern.include],
+              helper,
+              repository,
+            );
+          } else {
+            let externalGrammarName: string | null = null;
+            let externalGrammarInclude: string | null = null;
+            const sharpIndex = pattern.include.indexOf("#");
 
-              // External include
-              const externalGrammar = helper.getExternalGrammar(
-                externalGrammarName,
-                repository,
+            if (sharpIndex >= 0) {
+              externalGrammarName = pattern.include.substring(0, sharpIndex);
+              externalGrammarInclude = pattern.include.substring(
+                sharpIndex + 1,
               );
+            } else {
+              externalGrammarName = pattern.include;
+            }
+            // External include
+            const externalGrammar = helper.getExternalGrammar(
+              externalGrammarName,
+              repository,
+            );
 
-              if (externalGrammar) {
-                if (externalGrammarInclude) {
-                  const externalIncludedRule =
-                    externalGrammar.repository[externalGrammarInclude];
-                  if (externalIncludedRule) {
-                    ruleId = RuleFactory.getCompiledRuleId(
-                      externalIncludedRule,
-                      helper,
-                      externalGrammar.repository,
-                    );
-                  } else {
-                    // console.warn('CANNOT find rule for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
-                  }
-                } else {
-                  ruleId = RuleFactory.getCompiledRuleId(
-                    externalGrammar.repository.$self,
+            if (externalGrammar) {
+              if (externalGrammarInclude) {
+                const externalIncludedRule =
+                  externalGrammar.repository[externalGrammarInclude];
+                if (externalIncludedRule) {
+                  patternId = RuleFactory.getCompiledRuleId(
+                    externalIncludedRule,
                     helper,
                     externalGrammar.repository,
                   );
+                } else {
+                  // console.warn('CANNOT find rule for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
                 }
               } else {
-                // console.warn('CANNOT find grammar for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
+                patternId = RuleFactory.getCompiledRuleId(
+                  externalGrammar.repository.$self,
+                  helper,
+                  externalGrammar.repository,
+                );
               }
-              break;
+            } else {
+              // console.warn('CANNOT find grammar for scopeName: ' + pattern.include + ', I am: ', repository['$base'].name);
             }
           }
         } else {
-          ruleId = RuleFactory.getCompiledRuleId(pattern, helper, repository);
+          patternId = RuleFactory.getCompiledRuleId(
+            pattern,
+            helper,
+            repository,
+          );
         }
 
-        if (ruleId !== -1) {
-          const rule = helper.getRule(ruleId);
+        if (patternId !== -1) {
+          const rule = helper.getRule(patternId);
 
           let skipRule = false;
 
@@ -819,7 +1180,7 @@ export class RuleFactory {
             continue;
           }
 
-          r.push(ruleId);
+          r.push(patternId);
         }
       }
     }
@@ -829,366 +1190,4 @@ export class RuleFactory {
       hasMissingPatterns: ((patterns ? patterns.length : 0) !== r.length),
     };
   }
-}
-
-interface IRegExpSourceAnchorCache {
-  readonly A0_G0: string;
-  readonly A0_G1: string;
-  readonly A1_G0: string;
-  readonly A1_G1: string;
-}
-
-export class RegExpSource<TRuleId = RuleId | typeof endRuleId> {
-  public source: string;
-  public readonly ruleId: TRuleId;
-  public hasAnchor: boolean;
-  public readonly hasBackReferences: boolean;
-  private _anchorCache: IRegExpSourceAnchorCache | null;
-
-  constructor(regExpSource: string, ruleId: TRuleId) {
-    if (regExpSource) {
-      const len = regExpSource.length;
-      let lastPushedPos = 0;
-      const output: string[] = [];
-
-      let hasAnchor = false;
-      for (let pos = 0; pos < len; pos++) {
-        const ch = regExpSource.charAt(pos);
-
-        if (ch === "\\") {
-          if (pos + 1 < len) {
-            const nextCh = regExpSource.charAt(pos + 1);
-            if (nextCh === "z") {
-              output.push(regExpSource.substring(lastPushedPos, pos));
-              output.push("$(?!\\n)(?<!\\n)");
-              lastPushedPos = pos + 2;
-            } else if (nextCh === "A" || nextCh === "G") {
-              hasAnchor = true;
-            }
-            pos++;
-          }
-        }
-      }
-
-      this.hasAnchor = hasAnchor;
-      if (lastPushedPos === 0) {
-        // No \z hit
-        this.source = regExpSource;
-      } else {
-        output.push(regExpSource.substring(lastPushedPos, len));
-        this.source = output.join("");
-      }
-    } else {
-      this.hasAnchor = false;
-      this.source = regExpSource;
-    }
-
-    if (this.hasAnchor) {
-      this._anchorCache = this._buildAnchorCache();
-    } else {
-      this._anchorCache = null;
-    }
-
-    this.ruleId = ruleId;
-    this.hasBackReferences = HAS_BACK_REFERENCES.test(this.source);
-
-    // console.log('input: ' + regExpSource + ' => ' + this.source + ', ' + this.hasAnchor);
-  }
-
-  public clone(): RegExpSource<TRuleId> {
-    return new RegExpSource(this.source, this.ruleId);
-  }
-
-  public setSource(newSource: string): void {
-    if (this.source === newSource) {
-      return;
-    }
-    this.source = newSource;
-
-    if (this.hasAnchor) {
-      this._anchorCache = this._buildAnchorCache();
-    }
-  }
-
-  public resolveBackReferences(
-    lineText: string,
-    captureIndices: IOnigCaptureIndex[],
-  ): string {
-    const capturedValues = captureIndices.map((capture) => {
-      return lineText.substring(capture.start, capture.end);
-    });
-    BACK_REFERENCING_END.lastIndex = 0;
-    return this.source.replace(BACK_REFERENCING_END, (_, g1) => {
-      return escapeRegExpCharacters(capturedValues[parseInt(g1, 10)] || "");
-    });
-  }
-
-  private _buildAnchorCache(): IRegExpSourceAnchorCache {
-    const A0_G0_result: string[] = [];
-    const A0_G1_result: string[] = [];
-    const A1_G0_result: string[] = [];
-    const A1_G1_result: string[] = [];
-
-    let pos: number,
-      len: number,
-      ch: string,
-      nextCh: string;
-
-    for (pos = 0, len = this.source.length; pos < len; pos++) {
-      ch = this.source.charAt(pos);
-      A0_G0_result[pos] = ch;
-      A0_G1_result[pos] = ch;
-      A1_G0_result[pos] = ch;
-      A1_G1_result[pos] = ch;
-
-      if (ch === "\\") {
-        if (pos + 1 < len) {
-          nextCh = this.source.charAt(pos + 1);
-          if (nextCh === "A") {
-            A0_G0_result[pos + 1] = "\uFFFF";
-            A0_G1_result[pos + 1] = "\uFFFF";
-            A1_G0_result[pos + 1] = "A";
-            A1_G1_result[pos + 1] = "A";
-          } else if (nextCh === "G") {
-            A0_G0_result[pos + 1] = "\uFFFF";
-            A0_G1_result[pos + 1] = "G";
-            A1_G0_result[pos + 1] = "\uFFFF";
-            A1_G1_result[pos + 1] = "G";
-          } else {
-            A0_G0_result[pos + 1] = nextCh;
-            A0_G1_result[pos + 1] = nextCh;
-            A1_G0_result[pos + 1] = nextCh;
-            A1_G1_result[pos + 1] = nextCh;
-          }
-          pos++;
-        }
-      }
-    }
-
-    return {
-      A0_G0: A0_G0_result.join(""),
-      A0_G1: A0_G1_result.join(""),
-      A1_G0: A1_G0_result.join(""),
-      A1_G1: A1_G1_result.join(""),
-    };
-  }
-
-  public resolveAnchors(allowA: boolean, allowG: boolean): string {
-    if (!this.hasAnchor || !this._anchorCache) {
-      return this.source;
-    }
-
-    if (allowA) {
-      if (allowG) {
-        return this._anchorCache.A1_G1;
-      } else {
-        return this._anchorCache.A1_G0;
-      }
-    } else {
-      if (allowG) {
-        return this._anchorCache.A0_G1;
-      } else {
-        return this._anchorCache.A0_G0;
-      }
-    }
-  }
-}
-
-interface IRegExpSourceListAnchorCache<TRuleId> {
-  A0_G0: CompiledRule<TRuleId> | null;
-  A0_G1: CompiledRule<TRuleId> | null;
-  A1_G0: CompiledRule<TRuleId> | null;
-  A1_G1: CompiledRule<TRuleId> | null;
-}
-
-export class RegExpSourceList<TRuleId = RuleId | typeof endRuleId> {
-  private readonly _items: RegExpSource<TRuleId>[];
-  private _hasAnchors: boolean;
-  private _cached: CompiledRule<TRuleId> | null;
-  private _anchorCache: IRegExpSourceListAnchorCache<TRuleId>;
-
-  constructor() {
-    this._items = [];
-    this._hasAnchors = false;
-    this._cached = null;
-    this._anchorCache = {
-      A0_G0: null,
-      A0_G1: null,
-      A1_G0: null,
-      A1_G1: null,
-    };
-  }
-
-  public dispose(): void {
-    this._disposeCaches();
-  }
-
-  private _disposeCaches(): void {
-    if (this._cached) {
-      this._cached.dispose();
-      this._cached = null;
-    }
-    if (this._anchorCache.A0_G0) {
-      this._anchorCache.A0_G0.dispose();
-      this._anchorCache.A0_G0 = null;
-    }
-    if (this._anchorCache.A0_G1) {
-      this._anchorCache.A0_G1.dispose();
-      this._anchorCache.A0_G1 = null;
-    }
-    if (this._anchorCache.A1_G0) {
-      this._anchorCache.A1_G0.dispose();
-      this._anchorCache.A1_G0 = null;
-    }
-    if (this._anchorCache.A1_G1) {
-      this._anchorCache.A1_G1.dispose();
-      this._anchorCache.A1_G1 = null;
-    }
-  }
-
-  public push(item: RegExpSource<TRuleId>): void {
-    this._items.push(item);
-    this._hasAnchors = this._hasAnchors || item.hasAnchor;
-  }
-
-  public unshift(item: RegExpSource<TRuleId>): void {
-    this._items.unshift(item);
-    this._hasAnchors = this._hasAnchors || item.hasAnchor;
-  }
-
-  public length(): number {
-    return this._items.length;
-  }
-
-  public setSource(index: number, newSource: string): void {
-    if (this._items[index].source !== newSource) {
-      // bust the cache
-      this._disposeCaches();
-      this._items[index].setSource(newSource);
-    }
-  }
-
-  public compile(onigLib: IOnigLib): CompiledRule<TRuleId> {
-    if (!this._cached) {
-      const regExps = this._items.map((e) => e.source);
-      this._cached = new CompiledRule<TRuleId>(
-        onigLib,
-        regExps,
-        this._items.map((e) => e.ruleId),
-      );
-    }
-    return this._cached;
-  }
-
-  public compileAG(
-    onigLib: IOnigLib,
-    allowA: boolean,
-    allowG: boolean,
-  ): CompiledRule<TRuleId> {
-    if (!this._hasAnchors) {
-      return this.compile(onigLib);
-    } else {
-      if (allowA) {
-        if (allowG) {
-          if (!this._anchorCache.A1_G1) {
-            this._anchorCache.A1_G1 = this._resolveAnchors(
-              onigLib,
-              allowA,
-              allowG,
-            );
-          }
-          return this._anchorCache.A1_G1;
-        } else {
-          if (!this._anchorCache.A1_G0) {
-            this._anchorCache.A1_G0 = this._resolveAnchors(
-              onigLib,
-              allowA,
-              allowG,
-            );
-          }
-          return this._anchorCache.A1_G0;
-        }
-      } else {
-        if (allowG) {
-          if (!this._anchorCache.A0_G1) {
-            this._anchorCache.A0_G1 = this._resolveAnchors(
-              onigLib,
-              allowA,
-              allowG,
-            );
-          }
-          return this._anchorCache.A0_G1;
-        } else {
-          if (!this._anchorCache.A0_G0) {
-            this._anchorCache.A0_G0 = this._resolveAnchors(
-              onigLib,
-              allowA,
-              allowG,
-            );
-          }
-          return this._anchorCache.A0_G0;
-        }
-      }
-    }
-  }
-
-  private _resolveAnchors(
-    onigLib: IOnigLib,
-    allowA: boolean,
-    allowG: boolean,
-  ): CompiledRule<TRuleId> {
-    const regExps = this._items.map((e) => e.resolveAnchors(allowA, allowG));
-    return new CompiledRule(onigLib, regExps, this._items.map((e) => e.ruleId));
-  }
-}
-
-export class CompiledRule<TRuleId = RuleId | typeof endRuleId> {
-  private readonly scanner: OnigScanner;
-
-  constructor(
-    onigLib: IOnigLib,
-    private readonly regExps: string[],
-    private readonly rules: TRuleId[],
-  ) {
-    this.scanner = onigLib.createOnigScanner(regExps);
-  }
-
-  public dispose(): void {
-    if (typeof this.scanner.dispose === "function") {
-      this.scanner.dispose();
-    }
-  }
-
-  toString(): string {
-    const r: string[] = [];
-    for (let i = 0, len = this.rules.length; i < len; i++) {
-      r.push("   - " + this.rules[i] + ": " + this.regExps[i]);
-    }
-    return r.join("\n");
-  }
-
-  findNextMatchSync(
-    string: string | OnigString,
-    startPosition: number,
-    options: OrMask<FindOption>,
-  ): IFindNextMatchResult<TRuleId> | null {
-    const result = this.scanner.findNextMatchSync(
-      string,
-      startPosition,
-      options,
-    );
-    if (!result) {
-      return null;
-    }
-
-    return {
-      ruleId: this.rules[result.index],
-      captureIndices: result.captureIndices,
-    };
-  }
-}
-
-export interface IFindNextMatchResult<TRuleId = RuleId | typeof endRuleId> {
-  ruleId: TRuleId;
-  captureIndices: IOnigCaptureIndex[];
 }

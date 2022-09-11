@@ -1,42 +1,37 @@
-/*---------------------------------------------------------
- * Copyright (C) Microsoft Corporation. All rights reserved.
- *--------------------------------------------------------*/
-
-import * as assert from "https://deno.land/std@0.154.0/node/assert/strict.ts";
-import { parseJSON } from "../json.ts";
+import { parse as JSONparse } from "../json.ts";
+import { assertEquals } from "./deps.ts";
 
 function isValid(json: string): void {
   const expected = JSON.parse(json);
-  const actual = parseJSON(json, null, false);
-  assert.deepStrictEqual(actual, expected);
-
-  // let actual2 = JSONparse(json, true);
-  // assert.deepEqual(actual2, expected);
+  const actual = JSONparse(json, null, false);
+  assertEquals(actual, expected);
 }
 
 function isInvalid(json: string): void {
   let hadErr = false;
   try {
-    parseJSON(json, null, false);
+    JSONparse(json, null, false);
   } catch (_err) {
     hadErr = true;
   }
-  assert.strictEqual(hadErr, true, "expected invalid: " + json);
+  assertEquals(hadErr, true, "expected invalid: " + json);
 }
 
-Deno.test("JSON Invalid body", function () {
+Deno.test("JSON Invalid body", () => {
   isInvalid("{}[]");
   isInvalid("*");
 });
 
-Deno.test("JSON Trailing Whitespace", function () {
+Deno.test("JSON Trailing Whitespace", () => {
   isValid("{}\n\n");
 });
 
-Deno.test("JSON Objects", function () {
+Deno.test("JSON Objects", () => {
   isValid("{}");
   isValid('{"key": "value"}');
-  isValid('{"key1": true, "key2": 3, "key3": [null], "key4": { "nested": {}}}');
+  isValid(
+    '{"key1": true, "key2": 3, "key3": [null], "key4": { "nested": {}}}',
+  );
   isValid('{"constructor": true }');
 
   isInvalid("{");
@@ -48,7 +43,7 @@ Deno.test("JSON Objects", function () {
   isInvalid('{"key:42');
 });
 
-Deno.test("JSON Arrays", function () {
+Deno.test("JSON Arrays", () => {
   isValid("[]");
   isValid("[1, 2]");
   isValid('[1, "string", false, {}, [null]]');
@@ -63,7 +58,7 @@ Deno.test("JSON Arrays", function () {
   isInvalid("[magic]");
 });
 
-Deno.test("JSON Strings", function () {
+Deno.test("JSON Strings", () => {
   isValid('["string"]');
   isValid('["\\"\\\\\\/\\b\\f\\n\\r\\t\\u1234\\u12AB"]');
   isValid('["\\\\"]');
@@ -77,18 +72,18 @@ Deno.test("JSON Strings", function () {
   isInvalid("['string']");
 });
 
-Deno.test("Numbers", function () {
+Deno.test("Numbers", () => {
   isValid("[0, -1, 186.1, 0.123, -1.583e+4, 1.583E-4, 5e8]");
 
-  // isInvalid('[+1]');
-  // isInvalid('[01]');
-  // isInvalid('[1.]');
-  // isInvalid('[1.1+3]');
-  // isInvalid('[1.4e]');
-  // isInvalid('[-A]');
+  // isInvalid( '[+1]');
+  // isInvalid( '[01]');
+  // isInvalid( '[1.]');
+  // isInvalid( '[1.1+3]');
+  // isInvalid( '[1.4e]');
+  // isInvalid( '[-A]');
 });
 
-Deno.test("JSON misc", function () {
+Deno.test("JSON misc", () => {
   isValid("{}");
   isValid("[null]");
   isValid('{"a":true}');
