@@ -35,12 +35,12 @@ import {
   INITIAL,
   parseRawGrammar,
   Registry,
-} from "https://ghc.deno.dev/dcdunkan/deno_textmate@6.0.0/mod.ts";
+} from "https://ghc.deno.dev/dcdunkan/deno_textmate/mod.ts";
 import {
   loadWASM,
   OnigScanner,
   OnigString,
-} from "https://esm.sh/vscode-oniguruma@1.5.1";
+} from "https://esm.sh/vscode-oniguruma@1.6.2";
 
 // https://github.com/microsoft/vscode-oniguruma/blob/main/out/onig.wasm
 const wasmFile = await Deno.readFile("./onig.wasm");

@@ -2,15 +2,15 @@
 /*---------------------------------------------------------
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
-import { IOnigLib } from "../types.ts";
-import { fromFileUrl, join } from "./deps.ts";
 
+import { IOnigLib } from "../onig_lib.ts";
+import { fromFileUrl, join } from "https://deno.land/std@0.154.0/path/mod.ts";
 let onigurumaLib: Promise<IOnigLib> | null = null;
 
 export async function getOniguruma(): Promise<IOnigLib> {
   if (!onigurumaLib) {
     const vscodeOnigurumaModule = await import(
-      "https://esm.sh/vscode-oniguruma@1.5.1"
+      "https://esm.sh/vscode-oniguruma@1.6.2"
     );
     const wasmBin = Deno.readFileSync(
       join(fromFileUrl(import.meta.url), "../onig.wasm"),

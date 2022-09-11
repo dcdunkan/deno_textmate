@@ -3,7 +3,7 @@ import {
   loadWASM,
   OnigScanner,
   OnigString,
-} from "https://esm.sh/vscode-oniguruma@1.5.1";
+} from "https://esm.sh/vscode-oniguruma@1.6.2";
 
 const response = await fetch(
   "https://raw.githubusercontent.com/microsoft/vscode-oniguruma/main/out/onig.wasm",

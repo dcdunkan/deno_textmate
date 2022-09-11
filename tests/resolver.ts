@@ -2,10 +2,11 @@
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
 
-import { IOnigLib, IRawGrammar } from "../types.ts";
-import { parseRawGrammar } from "../grammar_reader.ts";
+import { IOnigLib } from "../onig_lib.ts";
+import { parseRawGrammar } from "../parse_raw_grammar.ts";
 import { RegistryOptions } from "../mod.ts";
-import { extname } from "./deps.ts";
+import { IRawGrammar } from "../raw_grammar.ts";
+import { extname } from "https://deno.land/std@0.154.0/path/mod.ts";
 
 export interface ILanguageRegistration {
   id: string;
@@ -59,7 +60,6 @@ export class Resolver implements RegistryOptions {
 
       for (let j = 0; j < language.extensions.length; j++) {
         const extension = language.extensions[j];
-
         if (extension === fileExtension) {
           return language.id;
         }

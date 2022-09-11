@@ -2,10 +2,10 @@
  * Copyright (C) Microsoft Corporation. All rights reserved.
  *--------------------------------------------------------*/
 
-import { IRawGrammar } from "./types.ts";
+import { IRawGrammar } from "./raw_grammar.ts";
 import * as plist from "./plist.ts";
 import { DebugFlags } from "./debug.ts";
-import { parse as manualParseJSON } from "./json.ts";
+import { parseJSON } from "./json.ts";
 
 export function parseRawGrammar(
   content: string,
@@ -22,7 +22,7 @@ function parseJSONGrammar(
   filename: string | null,
 ): IRawGrammar {
   if (DebugFlags.InDebugMode) {
-    return <IRawGrammar> manualParseJSON(contents, filename, true);
+    return <IRawGrammar> parseJSON(contents, filename, true);
   }
   return <IRawGrammar> JSON.parse(contents);
 }
@@ -38,5 +38,5 @@ function parsePLISTGrammar(
       "$vscodeTextmateLocation",
     );
   }
-  return <IRawGrammar> plist.parse(contents);
+  return <IRawGrammar> plist.parsePLIST(contents);
 }

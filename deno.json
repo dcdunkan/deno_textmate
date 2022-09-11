@@ -11,7 +11,7 @@
   },
   "test": {
     "files": {
-      "exclude": ["test-cases", "tests/theme_test.ts"]
+      "exclude": ["test-cases"]
     }
   }
 }
